@@ -1,4 +1,4 @@
-
+# Nix-Darwin and Home-Manager config
 
 
 ## Install & get ready
@@ -15,7 +15,9 @@
 Afer install, use the following comand after config changes:
 
 ```
-darwin-rebuild switch --flake dir/whre/flake.nix/lives/
+darwin-rebuild switch --flake dir/of/flake
 ```
+
+! For home manager ceate Applications directory within the home directory and change the ownership to the user.
 
 
