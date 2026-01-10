@@ -14,10 +14,23 @@
 
 Afer install, use the following comand after config changes:
 
+### 1
 ```
 darwin-rebuild switch --flake dir/of/flake
 ```
 
 ! For home manager ceate Applications directory within the home directory and change the ownership to the user.
 
+### 2
 
+
+
+```
+(cd .. && darwin-rebuild switch --flake ./nix)
+```
+
+### Update Flake
+
+```
+nix flake update
+```

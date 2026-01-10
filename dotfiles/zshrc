@@ -1,6 +1,8 @@
 
 alias vi=nvim
 
+eval "$(fnm env --use-on-cd --shell zsh)"
+
 
 ############## OH MY ZSH ####################
 
@@ -46,9 +48,10 @@ fi
 
 # Source/Load zinit
 source "${ZINIT_HOME}/zinit.zsh"
+zinit cdreplay -q
 
 ### plugins
-#zinit light zsh-users/zsh-syntax-highlighting
+zinit light zsh-users/zsh-syntax-highlighting
 zinit light zsh-users/zsh-completions
 zinit light zsh-users/zsh-autosuggestions
 zinit light Aloxaf/fzf-tab
