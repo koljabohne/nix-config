@@ -2,8 +2,10 @@
   description = "Kolja's Darwin system flake";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
-    nix-darwin.url = "github:LnL7/nix-darwin";
+
+  nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+
+    nix-darwin.url = "github:LnL7/nix-darwin/master";
     nix-darwin.inputs.nixpkgs.follows = "nixpkgs";
 
     # home manager
@@ -54,7 +56,8 @@
           fnm # node version manager
           go
           scdl # https://github.com/scdl-org/scdl soundcloud
-          asitop
+          #asitop
+          macpm
           cocoapods
           ffmpeg
           nmap
@@ -89,8 +92,10 @@
           "gnu-sed"
           "poppler"
           "nvm"
+          "tesseract"
+          # "mole"
+          "tesseract-lang"
           "cmake"
-          "fvm"
           "youtubedr"
           "yt-dlp"
           "dua-cli"
@@ -99,12 +104,10 @@
         ];
       casks = [
           "firefox"
-          "onyx"
           "opera"
           "xquartz"
-          "disk-expert"
           "aldente"
-          "dozer"
+          # "dozer"
           "chromedriver"
           "MonitorControl"
           #"ghostty"
@@ -115,11 +118,10 @@
           "cyberduck"
           "alt-tab"
           "miniconda"
-          "zen-browser"
           "deepl"
           "iterm2"
           "docker-desktop"
-	        "docker-toolbox"
+	        # "docker-toolbox"
         ];
         masApps = {
           #"Xcode" = 497799835;
@@ -161,14 +163,15 @@
     # Build darwin flake using:
     # $ darwin-rebuild build --flake .#MacBook-Pro
     darwinConfigurations."MacBook-Pro" = nix-darwin.lib.darwinSystem {
-system = "aarch64-darwin";
+    system = "aarch64-darwin";
       modules = [ 
         configuration
         nix-homebrew.darwinModules.nix-homebrew
         {
           nix-homebrew = {
             enable = true;
-            enableRosetta = true;
+            autoMigrate = true;
+            enableRosetta = false;
             user = vars.user;
             taps = {
               "homebrew/homebrew-core" = homebrew-core;
@@ -200,6 +203,9 @@ system = "aarch64-darwin";
           # Das ist okay, definiert wo dein User-Home liegt
           users.users.${vars.user}.home = vars.home;
         }
+          ({ lib, ... }: {
+          system.activationScripts.applications.text = lib.mkForce "";
+  })
       ];
     };
 

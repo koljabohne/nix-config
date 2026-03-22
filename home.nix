@@ -6,11 +6,12 @@ in
 {
     home.username = vars.user;
     home.homeDirectory = vars.home;
-
     
     home.packages = [
         pkgs.nerd-fonts.jetbrains-mono
         pkgs.nerd-fonts.geist-mono
+        pkgs.python312
+        pkgs.poetry
     ];
 
     home.file = {
@@ -19,7 +20,7 @@ in
         ".config/nix/nix.conf".source = ./dotfiles/nix.conf;
     };
 
-    programs.git = {
+    programs.git.settings = {
       enable = true;
       userName = "PracticalPassion";
       userEmail = "PracticalPassion@users.noreply.github.com";
@@ -41,15 +42,18 @@ in
         extensions = with pkgs.vscode-marketplace; [
           
           charliermarsh.ruff
-          #ms-python.python
+          ms-python.python
           ms-python.vscode-pylance
           ms-toolsai.jupyter
           ms-toolsai.jupyter-keymap
           ms-python.debugpy
           ms-toolsai.jupyter-renderers
+          anthropic.claude-code
+
           
           # Tools
           ms-vscode.remote-explorer
+          ms-vscode-remote.remote-ssh
           ms-azuretools.vscode-containers
           ms-azuretools.vscode-docker
           eamodio.gitlens
@@ -61,6 +65,7 @@ in
           alefragnani.bookmarks
           aaron-bond.better-comments
           janisdd.vscode-edit-csv
+          openai.chatgpt
           
           # Nix
           bbenoist.nix
@@ -75,13 +80,11 @@ in
           # Icons
           pkief.material-icon-theme
           helgardrichard.helium-icon-theme
-        ] ++ [
-          pkgs.open-vsx.ms-python.python
-        ];
-
+        ] ;
         userSettings = {
-                      "update.mode"= "none";
-            # WICHTIG: Settings Sync deaktivieren, damit Nix gewinnt
+            "update.mode"= "none";
+            "terminal.integrated.inheritEnv" = false;
+            "terminal.integrated.suggest.enabled"= false;
             "settingsSync.ignoredExtensions" = [];
             "settingsSync.keybindingsPerPlatform" = false;
             "explorer.confirmDragAndDrop" = false;
@@ -99,14 +102,14 @@ in
 
             # Formatting
             "editor.formatOnSave" = true;
-            "python.analysis.typeCheckingMode" = "basic";
-            "python.formatting.provider" = "none";
-            "editor.defaultFormatter" = "charliermarsh.ruff";
             "[python]" = {
-            "editor.defaultFormatter" = "charliermarsh.ruff";
+            "analysis.typeCheckingMode" = "basic";
+            "formatting.provider" = "none";
+                "editor.defaultFormatter" = "charliermarsh.ruff";
+              "editor.formatOnSave"= true;
+              "defaultInterpreterPath"= "/opt/homebrew/Caskroom/miniconda/base/bin/python";
             };
             "ruff.format.enabled" = true;
-
             "[json]" = {
                 "editor.defaultFormatter" = "vscode.json-language-features";
             };
@@ -114,7 +117,12 @@ in
                 "editor.defaultFormatter"= "vscode.css-language-features";
                 };
                   "[nix]"= {
-    "editor.defaultFormatter"= "jnoortheen.nix-ide";
+            "editor.formatOnSave"= false;
+                "editor.defaultFormatter"= "jnoortheen.nix-ide";
+            # "editor.defaultFormatter"= "jnoortheen.nix-ide";
+        };
+          "[javascript]"= {
+    "editor.defaultFormatter"= "vscode.typescript-language-features";
   };
         };
 
