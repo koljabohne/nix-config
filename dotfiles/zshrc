@@ -1,6 +1,10 @@
 
 alias vi=nvim
 
+# Nix-darwin management aliases
+alias nix-reb='sudo darwin-rebuild switch --flake ~/nix#MacBook-Pro'
+alias nix-open='code ~/nix'
+
 # Lazy load fnm (only when needed)
 eval "$(fnm env --use-on-cd --shell zsh)"
 
