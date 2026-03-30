@@ -50,6 +50,9 @@ in
           ms-toolsai.jupyter-renderers
           anthropic.claude-code
 
+          xrimson.bibtex-tidy
+          james-yu.latex-workshop
+
           
           # Tools
           ms-vscode.remote-explorer
@@ -88,6 +91,9 @@ in
             "settingsSync.ignoredExtensions" = [];
             "settingsSync.keybindingsPerPlatform" = false;
             "explorer.confirmDragAndDrop" = false;
+
+            #latex
+            "latex-workshop.bibtex-format.sort.enabled" = true;
             
             # UI
             "chat.disableAIFeatures" = true;
@@ -124,6 +130,7 @@ in
           "[javascript]"= {
     "editor.defaultFormatter"= "vscode.typescript-language-features";
   };
+  "[bibtex]"= { "editor.defaultFormatter"= "James-Yu.latex-workshop"; };
         };
 
         keybindings = [

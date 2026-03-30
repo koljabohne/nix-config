@@ -100,6 +100,7 @@
           "yt-dlp"
           "dua-cli"
           "zsh-autosuggestions"
+          "gemini-cli"
           "zsh-syntax-highlighting"
         ];
       casks = [
@@ -128,6 +129,7 @@
           # "Magnet" = 441258766;
         };
         onActivation.cleanup = "zap";
+        onActivation.upgrade = true;
       };
 
       # ref omz in zshrc
