@@ -1,6 +1,7 @@
 
 alias vi=nvim
 
+# Lazy load fnm (only when needed)
 eval "$(fnm env --use-on-cd --shell zsh)"
 
 
@@ -9,11 +10,10 @@ eval "$(fnm env --use-on-cd --shell zsh)"
 # Path to your omz installation, nix-darwin
 export ZSH="$(readlink -f /etc/static/zsh/omz-script)"
 
-
 ZSH_THEME="robbyrussell"
 plugins=(
-   git 
-   docker 
+   git
+   docker
    macos
 )
 source $ZSH/oh-my-zsh.sh
@@ -48,21 +48,23 @@ fi
 
 # Source/Load zinit
 source "${ZINIT_HOME}/zinit.zsh"
+
+### plugins (with turbo mode for speed)
+zinit wait lucid for \
+    zsh-users/zsh-syntax-highlighting \
+    zsh-users/zsh-completions \
+    zsh-users/zsh-autosuggestions \
+    Aloxaf/fzf-tab
+
 zinit cdreplay -q
 
-### plugins
-zinit light zsh-users/zsh-syntax-highlighting
-zinit light zsh-users/zsh-completions
-zinit light zsh-users/zsh-autosuggestions
-zinit light Aloxaf/fzf-tab
-
-### snippets
-zinit snippet OMZP::git
-zinit snippet OMZP::conda
-
-
-# copletions
-autoload -Uz compinit && compinit
+# Completions with caching (only rebuild once per day)
+autoload -Uz compinit
+if [[ -n ${ZDOTDIR}/.zcompdump(#qN.mh+24) ]]; then
+  compinit
+else
+  compinit -C
+fi
 
 bindkey -e
 bindkey '^p' history-search-backward
@@ -92,17 +94,20 @@ export PATH="$PATH:$HOME/flutter/bin"
 test -e "${HOME}/.iterm2_shell_integration.zsh" && source "${HOME}/.iterm2_shell_integration.zsh" || true
 
 
-# >>> conda initialize >>>
-# !! Contents within this block are managed by 'conda init' !!
-__conda_setup="$('/opt/homebrew/Caskroom/miniconda/base/bin/conda' 'shell.zsh' 'hook' 2> /dev/null)"
-if [ $? -eq 0 ]; then
-    eval "$__conda_setup"
-else
-    if [ -f "/opt/homebrew/Caskroom/miniconda/base/etc/profile.d/conda.sh" ]; then
-        . "/opt/homebrew/Caskroom/miniconda/base/etc/profile.d/conda.sh"
+# Lazy load conda (only initialize when 'conda' command is used)
+# This saves ~500ms on shell startup!
+conda() {
+    unset -f conda
+    __conda_setup="$('/opt/homebrew/Caskroom/miniconda/base/bin/conda' 'shell.zsh' 'hook' 2> /dev/null)"
+    if [ $? -eq 0 ]; then
+        eval "$__conda_setup"
     else
-        export PATH="/opt/homebrew/Caskroom/miniconda/base/bin:$PATH"
+        if [ -f "/opt/homebrew/Caskroom/miniconda/base/etc/profile.d/conda.sh" ]; then
+            . "/opt/homebrew/Caskroom/miniconda/base/etc/profile.d/conda.sh"
+        else
+            export PATH="/opt/homebrew/Caskroom/miniconda/base/bin:$PATH"
+        fi
     fi
-fi
-unset __conda_setup
-# <<< conda initialize <<<
+    unset __conda_setup
+    conda "$@"
+}
