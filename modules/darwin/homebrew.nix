@@ -8,7 +8,9 @@
       "mas"
       "gnu-sed"
       "poppler"
+      "qpdf"
       "nvm"
+      "pandoc"
       "tesseract"
       "tesseract-lang"
       "cmake"
@@ -21,6 +23,9 @@
 
     casks = [
       "firefox"
+      "KeePassXC"
+      "rstudio"
+      "r-app"
       "opera"
       "xquartz"
       "aldente"

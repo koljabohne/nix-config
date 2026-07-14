@@ -17,7 +17,9 @@
     # Development
     fnm # node version manager
     nodejs_20
+    pnpm_9
     go
+    jre_headless
 
     # Network & Security
     wireguard-tools
@@ -31,11 +33,12 @@
     scdl # soundcloud downloader
 
     # System
-    gemini-cli
     macpm
     cocoapods
     smbclient-ng
     oh-my-zsh
+    pympress
+    ocamlPackages.cpdf
   ];
 
   # Reference omz in zshrc

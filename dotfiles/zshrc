@@ -1,3 +1,5 @@
+# Deduplicate path and fpath arrays (speeds up command and completion lookups)
+typeset -U path fpath cdpath
 
 alias vi=nvim
 
@@ -53,22 +55,18 @@ fi
 # Source/Load zinit
 source "${ZINIT_HOME}/zinit.zsh"
 
+# Load autosuggestions immediately (synchronously)
+zinit light zsh-users/zsh-autosuggestions
+
 ### plugins (with turbo mode for speed)
 zinit wait lucid for \
     zsh-users/zsh-syntax-highlighting \
     zsh-users/zsh-completions \
-    zsh-users/zsh-autosuggestions \
     Aloxaf/fzf-tab
 
 zinit cdreplay -q
 
-# Completions with caching (only rebuild once per day)
-autoload -Uz compinit
-if [[ -n ${ZDOTDIR}/.zcompdump(#qN.mh+24) ]]; then
-  compinit
-else
-  compinit -C
-fi
+
 
 bindkey -e
 bindkey '^p' history-search-backward
@@ -83,7 +81,7 @@ HISTFILE=~/.zsh_history
 SAVEHIST=$HISTSIZE
 HISTDUP=erase
 setopt appendhistory
-setopt sharehistory
+unsetopt SHARE_HISTORY  # OMZ sets this; explicitly disable to prevent cross-session bleed
 setopt hist_ignore_space
 setopt hist_ignore_all_dups
 setopt hist_save_no_dups
@@ -94,24 +92,36 @@ setopt hist_find_no_dups
 
 # flutter
 export PATH="$PATH:$HOME/flutter/bin"
+export PATH="$HOME/.local/bin:$PATH"
 
 test -e "${HOME}/.iterm2_shell_integration.zsh" && source "${HOME}/.iterm2_shell_integration.zsh" || true
 
 
-# Lazy load conda (only initialize when 'conda' command is used)
-# This saves ~500ms on shell startup!
-conda() {
-    unset -f conda
-    __conda_setup="$('/opt/homebrew/Caskroom/miniconda/base/bin/conda' 'shell.zsh' 'hook' 2> /dev/null)"
-    if [ $? -eq 0 ]; then
-        eval "$__conda_setup"
-    else
-        if [ -f "/opt/homebrew/Caskroom/miniconda/base/etc/profile.d/conda.sh" ]; then
-            . "/opt/homebrew/Caskroom/miniconda/base/etc/profile.d/conda.sh"
-        else
-            export PATH="/opt/homebrew/Caskroom/miniconda/base/bin:$PATH"
-        fi
+# Source static conda definitions (takes ~8ms instead of ~390ms)
+if [ -f "/opt/homebrew/Caskroom/miniconda/base/etc/profile.d/conda.sh" ]; then
+    . "/opt/homebrew/Caskroom/miniconda/base/etc/profile.d/conda.sh"
+else
+    export PATH="/opt/homebrew/Caskroom/miniconda/base/bin:$PATH"
+fi
+
+# Statically activate the 'base' env on startup (takes ~1ms, saving another ~390ms!)
+if [ -z "${CONDA_SHLVL+x}" ] || [ "$CONDA_SHLVL" -eq 0 ]; then
+    export CONDA_SHLVL=1
+    export CONDA_DEFAULT_ENV='base'
+    export CONDA_PREFIX='/opt/homebrew/Caskroom/miniconda/base'
+    export CONDA_PROMPT_MODIFIER='(base) '
+    export PATH="/opt/homebrew/Caskroom/miniconda/base/bin:$PATH"
+    
+    # Prepend (base) to prompt and backup PS1 so conda deactivate/activate work correctly
+    if [ -z "${CONDA_PS1_BACKUP+x}" ]; then
+        export CONDA_PS1_BACKUP="${PS1:-}"
     fi
-    unset __conda_setup
-    conda "$@"
-}
+    PS1="(base) ${PS1:-}"
+
+    # Source activation scripts for packages (like gfortran, clang, etc.)
+    for f in /opt/homebrew/Caskroom/miniconda/base/etc/conda/activate.d/*.sh; do
+        if [ -f "$f" ]; then
+            . "$f"
+        fi
+    done
+fi

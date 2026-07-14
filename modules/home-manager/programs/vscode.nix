@@ -3,10 +3,20 @@
 {
   programs.vscode = {
     enable = true;
-    mutableExtensionsDir = false;
+    mutableExtensionsDir = true;
 
     profiles.default = {
       extensions = with pkgs.vscode-marketplace; [
+        # R
+        reditorsupport.r
+        rdebugger.r-debugger
+        reditorsupport.r-syntax
+        ikuyadeu.r-pack
+
+        # common
+        jack89ita.open-file-from-path
+        github.copilot-chat
+        
         # Python
         charliermarsh.ruff
         ms-python.python
@@ -59,13 +69,24 @@
         "settingsSync.ignoredExtensions" = [];
         "settingsSync.keybindingsPerPlatform" = false;
         "explorer.confirmDragAndDrop" = false;
+        "jupyter.askForKernelRestart" =  false;
+        "editor.wordWrap" = "on";
+        "editor.suggestSelection" = "first";
+        "editor.suggest.showIcons" = true;
+        "editor.suggest.showStatusBar" = true;
 
         # LaTeX
-        "latex-workshop.bibtex-format.sort.enabled" = true;
+        "latex-workshop.docker.enabled" = true;
+        "latex-workshop.docker.image.latex" = "latex-cli";
+        "latex-workshop.formatting.latex" = "latexindent";
+        "latex-workshop.bibtex-format.sort.enabled" = false;
+        "latex-workshop.bibtex-format.align-equal.enabled" = true;
 
         # UI
-        "chat.disableAIFeatures" = true;
+        "chat.extensionUnification.enabled" = true;
+        "chat.disableAIFeatures" = false;
         "workbench.iconTheme" = "helium-icon-theme";
+        "workbench.colorTheme" = "Dark Modern";
 
         # Fonts
         "terminal.integrated.fontFamily" = "JetBrains Mono";
@@ -183,6 +204,11 @@
           command = "editor.action.previousMatchFindAction";
           when = "editorFocus";
         }
+        {
+        key = "cmd+alt+o";
+        command = "workbench.action.tasks.runTask";
+        args = "open-file-rel";
+      }
       ];
     };
   };

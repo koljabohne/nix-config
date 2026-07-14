@@ -10,6 +10,7 @@ in
     ./programs/zsh.nix
     ./dotfiles.nix
     ./shell.nix
+    ./skills.nix
   ];
 
   home.username = vars.user;
