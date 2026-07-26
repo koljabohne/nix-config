@@ -1,8 +1,4 @@
-{ pkgs, config, lib, ... }:
-
-let
-  vars = import ./vars.nix;
-in
+{ pkgs, config, lib, hostVars, ... }:
 {
   imports = [
     ../../modules/macos/system/packages.nix
@@ -15,7 +11,7 @@ in
   # Necessary for using flakes on this system
   nix.settings.experimental-features = "nix-command flakes";
 
-  system.primaryUser = vars.user;
+  system.primaryUser = hostVars.user;
 
   # Set Git commit hash for darwin-version
   system.configurationRevision = null;
@@ -24,7 +20,7 @@ in
   system.stateVersion = 5;
 
   # The platform the configuration will be used on
-  nixpkgs.hostPlatform = vars.system;
+  nixpkgs.hostPlatform = hostVars.system;
 
   # Disable app linking warning
   system.activationScripts.applications.text = lib.mkForce "";

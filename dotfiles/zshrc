@@ -4,7 +4,7 @@ typeset -U path fpath cdpath
 alias vi=nvim
 
 # Nix-darwin management aliases
-alias nix-reb='sudo darwin-rebuild switch --impure --flake ~/nix#MacBook-Pro'
+alias nix-reb='sudo env NIX_CONFIG_REPO="$HOME/nix" darwin-rebuild switch --impure --flake "$HOME/nix#MacBook-Pro"'
 alias nix-open='code ~/nix'
 
 # Lazy load fnm (only when needed)

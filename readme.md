@@ -49,9 +49,10 @@ tools, shell configuration, Git, Neovim, and agent skills.
 └── skills/
 ```
 
-Host-specific values such as architecture and repository path live in the
-corresponding `hosts/<host>/vars.nix`. The macOS username and home directory
-are static. Ubuntu reads `USER` and `HOME` from the target user's environment.
+Host-specific defaults such as architecture live in the corresponding
+`hosts/<host>/vars.nix`. macOS reads its private username and home directory
+from `config.local.toml`. Ubuntu reads `USER` and `HOME` from the target user's
+environment.
 
 `modules/common/packages.nix` is the shared CLI package list. macOS installs
 that list system-wide and appends its full desktop and development package set
@@ -71,14 +72,19 @@ config.local.toml
 The file is ignored by Git. It contains scoped TOML configuration:
 
 ```toml
+[macos]
+username = "your-local-user"
+home = "/Users/your-local-user"
+
 [git]
 username = "Your Name"
 email = "you@example.com"
 ```
 
-Additional scopes can be added to the same file later. The `git` scope
-configures Git directly. Because the file is local and ignored, all rebuilds
-that use it must be evaluated with `--impure`.
+Additional scopes can be added to the same file later. The `macos` scope holds
+machine-local account data, while the `git` scope configures Git directly.
+Because the file is local and ignored, all rebuilds that use it must be
+evaluated with `--impure`.
 
 ## macOS
 

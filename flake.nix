@@ -1,5 +1,5 @@
 {
-  description = "Kolja's macOS and Linux home configuration";
+  description = "macOS and Linux home configuration";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -46,23 +46,41 @@
       ...
     }:
     let
-      macbookVars = import ./hosts/macbook-pro/vars.nix;
-      ubuntuVars = import ./hosts/ubuntu-cli/vars.nix;
+      configuredRepoPath = builtins.getEnv "NIX_CONFIG_REPO";
+      environmentHome = builtins.getEnv "HOME";
+      defaultRepoPath =
+        if environmentHome == "" then
+          throw "Set NIX_CONFIG_REPO and evaluate with --impure"
+        else
+          "${environmentHome}/nix";
+      repoPath =
+        if configuredRepoPath == "" then
+          defaultRepoPath
+        else
+          configuredRepoPath;
       loadLocalConfig =
-        repoPath:
+        path:
         let
-          configPath = builtins.toPath "${repoPath}/config.local.toml";
+          configPath = builtins.toPath "${path}/config.local.toml";
         in
         if builtins.pathExists configPath then
           builtins.fromTOML (builtins.readFile configPath)
         else
           { };
-      macbookLocalConfig = loadLocalConfig macbookVars.repoPath;
+      macbookLocalConfig = loadLocalConfig repoPath;
+      macbookVars = import ./hosts/macbook-pro/vars.nix {
+        localConfig = macbookLocalConfig;
+        inherit repoPath;
+      };
+      ubuntuVars = import ./hosts/ubuntu-cli/vars.nix;
       ubuntuLocalConfig = loadLocalConfig ubuntuVars.repoPath;
     in
     {
       darwinConfigurations.${macbookVars.configurationName} = nix-darwin.lib.darwinSystem {
         system = macbookVars.system;
+        specialArgs = {
+          hostVars = macbookVars;
+        };
         modules = [
           # Host configuration
           ./hosts/macbook-pro/default.nix

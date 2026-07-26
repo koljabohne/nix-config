@@ -18,7 +18,7 @@
   ];
 
   home.shellAliases = {
-    nix-reb = "sudo darwin-rebuild switch --impure --flake ~/nix#MacBook-Pro";
+    nix-reb = "sudo env NIX_CONFIG_REPO=\"$NIX_CONFIG_REPO\" darwin-rebuild switch --impure --flake \"$NIX_CONFIG_REPO#MacBook-Pro\"";
     nix-open = "code ~/nix";
   };
 }
