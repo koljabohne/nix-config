@@ -190,22 +190,6 @@
         "type": "github"
       }
     },
-    "oh-my-bash": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1780955543,
-        "narHash": "sha256-jBDpPej6MI1sJWwGWQ0pzZBgNCBrDnvRgSbTw+QN53Q=",
-        "owner": "ohmybash",
-        "repo": "oh-my-bash",
-        "rev": "627913b75855036cb5af2f3ad130c66a335e7382",
-        "type": "github"
-      },
-      "original": {
-        "owner": "ohmybash",
-        "repo": "oh-my-bash",
-        "type": "github"
-      }
-    },
     "root": {
       "inputs": {
         "home-manager": "home-manager",
@@ -216,8 +200,7 @@
         "nix-darwin": "nix-darwin",
         "nix-homebrew": "nix-homebrew",
         "nix-vscode-extensions": "nix-vscode-extensions",
-        "nixpkgs": "nixpkgs_2",
-        "oh-my-bash": "oh-my-bash"
+        "nixpkgs": "nixpkgs_2"
       }
     }
   },

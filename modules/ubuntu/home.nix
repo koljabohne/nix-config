@@ -4,7 +4,7 @@
   imports = [
     ../common/home.nix
     ./packages.nix
-    ./bash.nix
+    ./zsh.nix
   ];
 
   home.sessionVariables = {

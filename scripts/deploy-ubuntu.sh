@@ -77,13 +77,17 @@ install_prerequisites() {
     fi
   done
 
+  if [ ! -x /usr/bin/zsh ]; then
+    missing_prerequisite=true
+  fi
+
   if [ "$missing_prerequisite" = false ] && [ -r /etc/ssl/certs/ca-certificates.crt ]; then
     return
   fi
 
   log "Installing Ubuntu prerequisites"
   run_as_root apt-get update
-  run_as_root apt-get install -y ca-certificates curl git xz-utils
+  run_as_root apt-get install -y ca-certificates curl git xz-utils zsh
 }
 
 install_nix() {
@@ -138,17 +142,28 @@ validate_repository() {
 
 prepare_local_config() {
   local config_file="${repo_path}/config.local.toml"
+  local action=
 
   if [ ! -e "$config_file" ]; then
-    log "Creating private local configuration"
-    (
-      umask 077
-      printf '[git]\\nusername = \"\"\\nemail = \"\"\\n' > "$config_file"
-    )
+    action="Creating"
+  elif [ -f "$config_file" ] &&
+    grep -Fqx '[git]\nusername = ""\nemail = ""\n' "$config_file"; then
+    action="Repairing malformed"
+  else
+    return
   fi
+
+  log "${action} private local configuration"
+  (
+    umask 077
+    printf '[git]\nusername = ""\nemail = ""\n' > "$config_file"
+    chmod 600 "$config_file"
+  )
 }
 
 activate_home_manager() {
+  local backup_extension
+
   export USER="${USER:-$(id -un)}"
   export NIX_CONFIG_REPO="$repo_path"
   export NIX_CONFIG_BRANCH="$repo_branch"
@@ -160,10 +175,27 @@ activate_home_manager() {
     export NIX_CONFIG="extra-experimental-features = nix-command flakes"
   fi
 
+  backup_extension="hm-backup-$(date -u +%Y%m%dT%H%M%SZ)-$$"
   log "Activating ${flake_config} for ${USER} on ${NIX_SYSTEM}"
   nix --extra-experimental-features "nix-command flakes" \
     run github:nix-community/home-manager -- \
-    switch --impure -b hm-backup --flake "${repo_path}#${flake_config}"
+    switch --impure -b "$backup_extension" --flake "${repo_path}#${flake_config}"
+}
+
+configure_login_shell() {
+  local zsh_path="/usr/bin/zsh"
+  local current_shell
+
+  [ -x "$zsh_path" ] || fail "Ubuntu ZSH is not installed at ${zsh_path}"
+  grep -Fxq "$zsh_path" /etc/shells || fail "${zsh_path} is not registered in /etc/shells"
+
+  current_shell="$(getent passwd "$USER" | cut -d: -f7)"
+  if [ "$current_shell" = "$zsh_path" ]; then
+    return
+  fi
+
+  log "Setting ${zsh_path} as the login shell for ${USER}"
+  run_as_root chsh -s "$zsh_path" "$USER"
 }
 
 main() {
@@ -172,6 +204,7 @@ main() {
   prepare_local_config
   install_nix
   activate_home_manager
+  configure_login_shell
   log "Ubuntu CLI environment is ready. Start a new login shell."
 }
 

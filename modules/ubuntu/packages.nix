@@ -7,7 +7,6 @@ in
 {
   # Add Ubuntu-only packages after commonPackages when needed.
   home.packages = commonPackages ++ (with pkgs; [
-    blesh
     python312
     uv
   ]);

@@ -40,10 +40,9 @@ tools, shell configuration, Git, Neovim, and agent skills.
 │   │       └── packages.nix
 │   └── ubuntu/
 │       ├── home.nix
-│       ├── bash.nix
-│       └── packages.nix
+│       ├── packages.nix
+│       └── zsh.nix
 ├── dotfiles/
-│   ├── bashrc
 │   ├── zshrc
 │   └── nvim/
 └── skills/
@@ -60,9 +59,9 @@ in `modules/macos/system/packages.nix`; its Home Manager profile includes both
 Poetry and `uv`. Ubuntu installs the shared list plus its lean Python and `uv`
 environment through `modules/ubuntu/packages.nix`.
 
-The Ubuntu Bash profile uses Oh My Bash with the same `robbyrussell` theme as
-the macOS ZSH profile, plus Git and Docker completions. `ble.sh` adds inline
-history suggestions, syntax highlighting, and enhanced completion without
+The Ubuntu profile uses ZSH with the same `robbyrussell` Oh My Zsh theme as
+macOS. Home Manager adds Git and Docker plugins, fast history-based
+autosuggestions, syntax highlighting, and prefix-aware history search without
 requiring a desktop environment.
 
 ## Private local configuration
@@ -132,6 +131,7 @@ The script:
   both shell files under `/var/backups/nix-installer-preflight/`
 - detects `x86_64-linux` or `aarch64-linux`
 - activates the `ubuntu-cli` Home Manager configuration
+- sets `/usr/bin/zsh` as the target user's login shell
 
 By default, the repository root is derived from the location of the deployment
 script. `NIX_CONFIG_REPO` can override it when necessary:
@@ -141,7 +141,7 @@ export NIX_CONFIG_REPO=/srv/nix-config
 /srv/nix-config/scripts/deploy-ubuntu.sh
 ```
 
-After activation, the Ubuntu Bash environment provides:
+After activation, the Ubuntu ZSH environment provides:
 
 ```text
 nix-reb      Apply the checked-out configuration
@@ -183,7 +183,7 @@ On a normal Ubuntu system with systemd, install Nix in multi-user mode:
 
 ```bash
 sudo apt update
-sudo apt install -y curl git xz-utils
+sudo apt install -y curl git xz-utils zsh
 curl -L https://nixos.org/nix/install | sh -s -- --daemon
 ```
 
@@ -205,26 +205,35 @@ The first activation can use Home Manager directly from its flake:
 ```bash
 NIX_CONFIG="extra-experimental-features = nix-command flakes" nix \
   run github:nix-community/home-manager -- \
-  switch --impure -b hm-backup --flake ~/nix#ubuntu-cli
+  switch --impure -b "hm-backup-$(date -u +%Y%m%dT%H%M%SZ)" \
+  --flake ~/nix#ubuntu-cli
 ```
 
-The backup suffix prevents existing files such as `~/.bashrc` from being
-silently overwritten. The explicit feature flag is only needed during
-bootstrap; the managed `~/.config/nix/nix.conf` enables flakes afterwards.
-Home Manager itself is also part of the activated profile:
+The unique backup suffix prevents existing files from being silently
+overwritten and avoids collisions with backups from a failed earlier
+activation. Set ZSH as the login shell after the first activation:
+
+```bash
+sudo chsh -s /usr/bin/zsh "$USER"
+```
+
+The explicit feature flag is only needed during bootstrap; the managed
+`~/.config/nix/nix.conf` enables flakes afterwards. Home Manager itself is also
+part of the activated profile:
 
 ```bash
 home-manager switch --impure --flake ~/nix#ubuntu-cli
 ```
 
-The `nix-reb` Bash alias runs this command using the values from the Ubuntu
+The `nix-reb` ZSH alias runs this command using the values from the Ubuntu
 vars file.
 
 ## What the Ubuntu profile installs
 
 The Linux CLI profile includes:
 
-- Bash with completion, aliases, persistent history, and `dotfiles/bashrc`
+- ZSH with Oh My Zsh, autosuggestions, syntax highlighting, and persistent
+  history
 - Git and the global ignore file
 - Neovim and the repository's Neovim configuration
 - Python with `uv` for project and dependency management
@@ -234,16 +243,16 @@ The Linux CLI profile includes:
 External skills are pinned by `flake.lock`. Local skills are linked from
 `repoPath/skills`, so edits in this repository are visible immediately.
 
-Home Manager generates `~/.bashrc` and inserts the contents of
-`dotfiles/bashrc` into it. The macOS-only `dotfiles/zshrc` is imported solely
-by the Darwin profile and is never installed by the Ubuntu profile.
+Home Manager generates the Ubuntu `~/.zshrc` from
+`modules/ubuntu/zsh.nix`. The macOS-only `dotfiles/zshrc` remains imported
+solely by the Darwin profile.
 
 ## History and synchronization
 
-Home Manager configures Bash to store history at:
+Home Manager configures Ubuntu ZSH to store history at:
 
 ```text
-~/.local/state/bash/history
+~/.local/state/zsh/history
 ```
 
 The history file is mutable state and is deliberately not added to the Nix
