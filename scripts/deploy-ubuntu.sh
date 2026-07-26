@@ -77,17 +77,13 @@ install_prerequisites() {
     fi
   done
 
-  if [ ! -x /usr/bin/zsh ]; then
-    missing_prerequisite=true
-  fi
-
   if [ "$missing_prerequisite" = false ] && [ -r /etc/ssl/certs/ca-certificates.crt ]; then
     return
   fi
 
   log "Installing Ubuntu prerequisites"
   run_as_root apt-get update
-  run_as_root apt-get install -y ca-certificates curl git xz-utils zsh
+  run_as_root apt-get install -y ca-certificates curl git xz-utils
 }
 
 install_nix() {
@@ -142,22 +138,28 @@ validate_repository() {
 
 prepare_local_config() {
   local config_file="${repo_path}/config.local.toml"
-  local action=
+  local backup
 
-  if [ ! -e "$config_file" ]; then
-    action="Creating"
-  elif [ -f "$config_file" ] &&
-    grep -Fqx '[git]\nusername = ""\nemail = ""\n' "$config_file"; then
-    action="Repairing malformed"
+  # An earlier version of this script wrote the file as a single line with
+  # literal backslash escapes, which makes builtins.fromTOML abort and takes
+  # every evaluation of the flake down with it. Validate the shape instead of
+  # comparing against one known-bad wording, and preserve whatever was there.
+  if [ -e "$config_file" ]; then
+    if grep -Eq '^\[git\]$' "$config_file"; then
+      return
+    fi
+
+    backup="${config_file}.malformed-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    log "Backing up malformed local configuration to ${backup}"
+    mv -- "$config_file" "$backup"
+    log "Recreating private local configuration"
   else
-    return
+    log "Creating private local configuration"
   fi
 
-  log "${action} private local configuration"
   (
     umask 077
     printf '[git]\nusername = ""\nemail = ""\n' > "$config_file"
-    chmod 600 "$config_file"
   )
 }
 
@@ -182,29 +184,12 @@ activate_home_manager() {
     switch --impure -b "$backup_extension" --flake "${repo_path}#${flake_config}"
 }
 
-configure_login_shell() {
-  local zsh_path="/usr/bin/zsh"
-  local current_shell
-
-  [ -x "$zsh_path" ] || fail "Ubuntu ZSH is not installed at ${zsh_path}"
-  grep -Fxq "$zsh_path" /etc/shells || fail "${zsh_path} is not registered in /etc/shells"
-
-  current_shell="$(getent passwd "$USER" | cut -d: -f7)"
-  if [ "$current_shell" = "$zsh_path" ]; then
-    return
-  fi
-
-  log "Setting ${zsh_path} as the login shell for ${USER}"
-  run_as_root chsh -s "$zsh_path" "$USER"
-}
-
 main() {
   install_prerequisites
   validate_repository
   prepare_local_config
   install_nix
   activate_home_manager
-  configure_login_shell
   log "Ubuntu CLI environment is ready. Start a new login shell."
 }
 

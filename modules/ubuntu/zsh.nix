@@ -2,6 +2,24 @@
 { hostVars, ... }:
 
 {
+  # Home Manager cannot edit /etc/passwd, so the login shell stays Ubuntu's
+  # bash. Rather than installing an apt ZSH and running chsh, the generated
+  # ~/.bashrc hands interactive sessions over to the ZSH from this profile.
+  programs.bash = {
+    enable = true;
+    initExtra = ''
+      # Guard on interactivity so scp, rsync, and other non-interactive
+      # sessions keep working, and on ZSH_VERSION so the handover cannot loop.
+      if [[ $- == *i* && -z ''${ZSH_VERSION-} ]]; then
+        zsh_binary="$HOME/.nix-profile/bin/zsh"
+        if [ -x "$zsh_binary" ]; then
+          exec "$zsh_binary"
+        fi
+        unset zsh_binary
+      fi
+    '';
+  };
+
   programs.zsh = {
     enable = true;
     enableCompletion = true;

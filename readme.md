@@ -130,8 +130,13 @@ The script:
 - safely repairs a stale `/etc/bash.bashrc.backup-before-nix` after preserving
   both shell files under `/var/backups/nix-installer-preflight/`
 - detects `x86_64-linux` or `aarch64-linux`
+- sets aside a malformed `config.local.toml` and recreates it, so a broken file
+  cannot keep the flake from evaluating
 - activates the `ubuntu-cli` Home Manager configuration
-- sets `/usr/bin/zsh` as the target user's login shell
+
+The script never changes the login shell and never installs ZSH through `apt`.
+ZSH comes from Nix, and the generated `~/.bashrc` hands interactive sessions
+over to it.
 
 By default, the repository root is derived from the location of the deployment
 script. `NIX_CONFIG_REPO` can override it when necessary:
@@ -183,7 +188,7 @@ On a normal Ubuntu system with systemd, install Nix in multi-user mode:
 
 ```bash
 sudo apt update
-sudo apt install -y curl git xz-utils zsh
+sudo apt install -y curl git xz-utils
 curl -L https://nixos.org/nix/install | sh -s -- --daemon
 ```
 
@@ -211,11 +216,8 @@ NIX_CONFIG="extra-experimental-features = nix-command flakes" nix \
 
 The unique backup suffix prevents existing files from being silently
 overwritten and avoids collisions with backups from a failed earlier
-activation. Set ZSH as the login shell after the first activation:
-
-```bash
-sudo chsh -s /usr/bin/zsh "$USER"
-```
+activation. No further step is needed to reach ZSH: the next login shell picks
+it up on its own.
 
 The explicit feature flag is only needed during bootstrap; the managed
 `~/.config/nix/nix.conf` enables flakes afterwards. Home Manager itself is also
@@ -246,6 +248,14 @@ External skills are pinned by `flake.lock`. Local skills are linked from
 Home Manager generates the Ubuntu `~/.zshrc` from
 `modules/ubuntu/zsh.nix`. The macOS-only `dotfiles/zshrc` remains imported
 solely by the Darwin profile.
+
+ZSH itself is installed by Nix, not by `apt`. Home Manager cannot edit
+`/etc/passwd`, so the login shell in `/etc/passwd` stays Ubuntu's Bash and
+`$SHELL` keeps reporting it. The generated `~/.bashrc` therefore `exec`s
+`~/.nix-profile/bin/zsh` for interactive sessions only, which leaves `scp`,
+`rsync`, and other non-interactive sessions untouched. If the Home Manager
+profile is ever missing, the handover is skipped and Bash remains usable, so a
+broken profile cannot lock the account out.
 
 ## History and synchronization
 
