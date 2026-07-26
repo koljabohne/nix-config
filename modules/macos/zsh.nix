@@ -1,3 +1,4 @@
+# Zsh is configured only for macOS.
 { ... }:
 
 {

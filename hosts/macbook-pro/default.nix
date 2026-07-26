@@ -1,13 +1,13 @@
 { pkgs, config, lib, ... }:
 
 let
-  vars = import ../../vars.nix;
+  vars = import ./vars.nix;
 in
 {
   imports = [
-    ../../modules/darwin/packages.nix
-    ../../modules/darwin/homebrew.nix
-    ../../modules/darwin/fonts.nix
+    ../../modules/macos/system/packages.nix
+    ../../modules/macos/system/homebrew.nix
+    ../../modules/macos/system/fonts.nix
   ];
 
   nixpkgs.config.allowUnfree = true;
@@ -24,7 +24,7 @@ in
   system.stateVersion = 5;
 
   # The platform the configuration will be used on
-  nixpkgs.hostPlatform = "aarch64-darwin";
+  nixpkgs.hostPlatform = vars.system;
 
   # Disable app linking warning
   system.activationScripts.applications.text = lib.mkForce "";

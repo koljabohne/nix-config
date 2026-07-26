@@ -1,3 +1,4 @@
+# macOS system fonts.
 { pkgs, ... }:
 
 {
