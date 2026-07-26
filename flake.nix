@@ -1,5 +1,5 @@
 {
-  description = "Kolja's Darwin system flake";
+  description = "Kolja's macOS and Linux home configuration";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -32,55 +32,86 @@
     };
   };
 
-  outputs = inputs@{ self, nix-darwin, nixpkgs, nix-homebrew, homebrew-core, homebrew-cask, homebrew-fvm, home-manager, nix-vscode-extensions, ... }:
-  let
-    vars = import ./vars.nix;
-  in
-  {
-    darwinConfigurations."MacBook-Pro" = nix-darwin.lib.darwinSystem {
-      system = "aarch64-darwin";
-      modules = [
-        # Host configuration
-        ./hosts/macbook-pro/default.nix
+  outputs =
+    inputs@{
+      self,
+      nix-darwin,
+      nixpkgs,
+      nix-homebrew,
+      homebrew-core,
+      homebrew-cask,
+      homebrew-fvm,
+      home-manager,
+      nix-vscode-extensions,
+      ...
+    }:
+    let
+      macbookVars = import ./hosts/macbook-pro/vars.nix;
+      ubuntuVars = import ./hosts/ubuntu-cli/vars.nix;
+    in
+    {
+      darwinConfigurations.${macbookVars.configurationName} = nix-darwin.lib.darwinSystem {
+        system = macbookVars.system;
+        modules = [
+          # Host configuration
+          ./hosts/macbook-pro/default.nix
 
-        # Homebrew integration
-        nix-homebrew.darwinModules.nix-homebrew
-        {
-          nix-homebrew = {
-            enable = true;
-            autoMigrate = true;
-            enableRosetta = false;
-            user = vars.user;
-            taps = {
-              "homebrew/homebrew-core" = homebrew-core;
-              "homebrew/homebrew-cask" = homebrew-cask;
-              "leoafarias/homebrew-fvm" = homebrew-fvm;
+          # Homebrew integration
+          nix-homebrew.darwinModules.nix-homebrew
+          {
+            nix-homebrew = {
+              enable = true;
+              autoMigrate = true;
+              enableRosetta = false;
+              user = macbookVars.user;
+              taps = {
+                "homebrew/homebrew-core" = homebrew-core;
+                "homebrew/homebrew-cask" = homebrew-cask;
+                "leoafarias/homebrew-fvm" = homebrew-fvm;
+              };
             };
-          };
-        }
+          }
 
-        # Home Manager integration
-        home-manager.darwinModules.home-manager
-        {
-          nixpkgs.overlays = [
-            nix-vscode-extensions.overlays.default
+          # Home Manager integration
+          home-manager.darwinModules.home-manager
+          {
+            nixpkgs.overlays = [
+              nix-vscode-extensions.overlays.default
+            ];
+
+            nixpkgs.config.allowUnfree = true;
+
+            home-manager = {
+              extraSpecialArgs = {
+                inherit inputs;
+                hostVars = macbookVars;
+              };
+              useGlobalPkgs = true;
+              useUserPackages = true;
+              users.${macbookVars.user} = import ./hosts/macbook-pro/home.nix;
+            };
+
+            users.users.${macbookVars.user}.home = macbookVars.home;
+          }
+        ];
+      };
+
+      homeConfigurations.${ubuntuVars.configurationName} =
+        home-manager.lib.homeManagerConfiguration {
+          pkgs = import nixpkgs {
+            system = ubuntuVars.system;
+            config.allowUnfree = true;
+          };
+          extraSpecialArgs = {
+            inherit inputs;
+            hostVars = ubuntuVars;
+          };
+          modules = [
+            ./hosts/ubuntu-cli/default.nix
           ];
+        };
 
-          nixpkgs.config.allowUnfree = true;
-
-          home-manager = {
-            extraSpecialArgs = { inherit inputs; };
-            useGlobalPkgs = true;
-            useUserPackages = true;
-            users.${vars.user} = import ./modules/home-manager;
-          };
-
-          users.users.${vars.user}.home = vars.home;
-        }
-      ];
+      # Expose the package set for convenience
+      darwinPackages = self.darwinConfigurations.${macbookVars.configurationName}.pkgs;
     };
-
-    # Expose the package set for convenience
-    darwinPackages = self.darwinConfigurations."MacBook-Pro".pkgs;
-  };
 }

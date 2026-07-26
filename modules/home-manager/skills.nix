@@ -1,4 +1,4 @@
-{ inputs, config, ... }:
+{ inputs, config, hostVars, ... }:
 
 let
   skillsRepo = inputs.mattpocock-skills;
@@ -77,9 +77,9 @@ let
 
   # Generate home.file mappings for local custom skills using out-of-store symlinks
   mkLocalSkillFiles = name: {
-    ".agents/skills/${name}".source = config.lib.file.mkOutOfStoreSymlink "${config.home.homeDirectory}/nix/skills/${name}";
-    ".claude/skills/${name}".source = config.lib.file.mkOutOfStoreSymlink "${config.home.homeDirectory}/nix/skills/${name}";
-    ".gemini/config/skills/${name}".source = config.lib.file.mkOutOfStoreSymlink "${config.home.homeDirectory}/nix/skills/${name}";
+    ".agents/skills/${name}".source = config.lib.file.mkOutOfStoreSymlink "${hostVars.repoPath}/skills/${name}";
+    ".claude/skills/${name}".source = config.lib.file.mkOutOfStoreSymlink "${hostVars.repoPath}/skills/${name}";
+    ".gemini/config/skills/${name}".source = config.lib.file.mkOutOfStoreSymlink "${hostVars.repoPath}/skills/${name}";
   };
 
   # Merge all attribute sets

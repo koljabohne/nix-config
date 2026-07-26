@@ -1,24 +1,16 @@
-{ config, pkgs, ... }:
-
-let
-  vars = import ../../vars.nix;
-in
+{ hostVars, pkgs, ... }:
 {
   imports = [
-    ./programs/vscode.nix
     ./programs/git.nix
-    ./programs/zsh.nix
     ./dotfiles.nix
     ./shell.nix
     ./skills.nix
   ];
 
-  home.username = vars.user;
-  home.homeDirectory = vars.home;
+  home.username = hostVars.user;
+  home.homeDirectory = hostVars.home;
 
   home.packages = [
-    pkgs.nerd-fonts.jetbrains-mono
-    pkgs.nerd-fonts.geist-mono
     pkgs.python312
     pkgs.poetry
   ];

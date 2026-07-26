@@ -1,173 +1,207 @@
-# Nix-Darwin Configuration
+# Nix configuration for macOS and Ubuntu
 
-A modular nix-darwin configuration with home-manager integration for macOS system management.
+This flake manages two kinds of hosts:
 
-## Project Structure
+- macOS through nix-darwin with Home Manager
+- Ubuntu and other non-NixOS Linux systems through standalone Home Manager
 
-```
-/Users/local-user/nix/
-├── flake.nix                    # Main flake entry point
-├── vars.nix                     # User variables (username, home path)
+Ubuntu remains an Ubuntu system. APT continues to manage the operating system,
+drivers, and system services. Nix and Home Manager manage the user-level CLI
+tools, shell configuration, Git, Neovim, and agent skills.
+
+## Project structure
+
+```text
+.
+├── flake.nix
 ├── hosts/
-│   └── macbook-pro/
-│       └── default.nix          # Host-specific configuration
+│   ├── macbook-pro/
+│   │   ├── default.nix
+│   │   ├── home.nix
+│   │   └── vars.nix
+│   └── ubuntu-cli/
+│       ├── default.nix
+│       └── vars.nix
 ├── modules/
 │   ├── darwin/
-│   │   ├── packages.nix         # System packages (nixpkgs)
-│   │   ├── homebrew.nix         # Homebrew brews, casks, and mas apps
-│   │   └── fonts.nix            # System fonts
 │   └── home-manager/
-│       ├── default.nix          # Home-manager entry point
-│       ├── programs/
-│       │   ├── vscode.nix       # VSCode configuration & extensions
-│       │   └── git.nix          # Git configuration
-│       ├── shell.nix            # Shell aliases & environment variables
-│       └── dotfiles.nix         # Dotfile management
-└── dotfiles/
-    ├── nvim/                    # Neovim configuration
-    ├── zshrc                    # Zsh configuration
-    └── nix.conf                 # Nix configuration
-
+│       ├── default.nix
+│       ├── packages-cli.nix
+│       ├── profiles/
+│       │   ├── darwin.nix
+│       │   └── linux-cli.nix
+│       └── programs/
+│           ├── bash.nix
+│           ├── git.nix
+│           ├── vscode.nix
+│           └── zsh.nix
+├── dotfiles/
+│   ├── bashrc
+│   ├── zshrc
+│   └── nvim/
+└── skills/
 ```
 
-## Initial Setup
+Host-specific values such as username, home directory, architecture, and
+repository path live in the corresponding `hosts/<host>/vars.nix`.
 
-1. Install Nix:
-   ```bash
-   sh <(curl -L https://nixos.org/nix/install)
-   ```
+## macOS
 
-2. Clone this repository:
-   ```bash
-   git clone <your-repo> ~/nix
-   cd ~/nix
-   ```
+The existing Mac configuration is available as `MacBook-Pro`.
 
-3. Update `vars.nix` with your username and home path if needed
+Initial activation:
 
-4. Install nix-darwin:
-   ```bash
-   nix run nix-darwin --experimental-features 'nix-command flakes' -- switch --flake ~/nix#MacBook-Pro
-   ```
+```bash
+nix run nix-darwin -- switch --flake ~/nix#MacBook-Pro
+```
 
-## Daily Usage
-
-### Quick Commands (Shell Aliases)
-
-After the first rebuild, you can use these convenient aliases:
-
-- `dr` - Rebuild and switch to new configuration
-- `nc` - Open nix config directory in VSCode
-- `ne` - Open flake.nix in VSCode
-
-### Manual Rebuild
-
-If you prefer the full command:
+Subsequent rebuilds:
 
 ```bash
 sudo darwin-rebuild switch --flake ~/nix#MacBook-Pro
 ```
 
-Or from anywhere:
+The `nix-reb` alias runs the same rebuild command.
 
-```bash
-cd ~/nix && sudo darwin-rebuild switch --flake .#MacBook-Pro
+## Ubuntu CLI
+
+### 1. Adjust the host variables
+
+Edit `hosts/ubuntu-cli/vars.nix` before activating the configuration:
+
+```nix
+let
+  user = "kolja";
+  home = "/home/${user}";
+in
+{
+  inherit user home;
+
+  system = "x86_64-linux";
+  configurationName = "${user}@ubuntu";
+  repoPath = "${home}/nix";
+}
 ```
 
-### Update Flake Inputs
+Use `aarch64-linux` instead of `x86_64-linux` on an ARM Linux host.
 
-Update all flake inputs to their latest versions:
+### 2. Install Nix
+
+On a normal Ubuntu system with systemd, install Nix in multi-user mode:
+
+```bash
+sudo apt update
+sudo apt install -y curl git xz-utils
+curl -L https://nixos.org/nix/install | sh -s -- --daemon
+```
+
+Start a new login shell after the installer completes.
+
+### 3. Clone this repository
+
+The clone location must match `repoPath` in `hosts/ubuntu-cli/vars.nix`:
+
+```bash
+git clone <repository-url> ~/nix
+cd ~/nix
+```
+
+### 4. Activate Home Manager
+
+The first activation can use Home Manager directly from its flake:
+
+```bash
+nix --extra-experimental-features "nix-command flakes" \
+  run github:nix-community/home-manager -- \
+  switch -b hm-backup --flake ~/nix#kolja@ubuntu
+```
+
+The backup suffix prevents existing files such as `~/.bashrc` from being
+silently overwritten. The explicit feature flag is only needed during
+bootstrap; the managed `~/.config/nix/nix.conf` enables flakes afterwards.
+Home Manager itself is also part of the activated profile:
+
+```bash
+home-manager switch --flake ~/nix#kolja@ubuntu
+```
+
+The `nix-reb` Bash alias runs this command using the values from the Ubuntu
+vars file.
+
+## What the Ubuntu profile installs
+
+The Linux CLI profile includes:
+
+- Bash with completion, aliases, persistent history, and `dotfiles/bashrc`
+- Git and the global ignore file
+- Neovim and the repository's Neovim configuration
+- common terminal and development tools
+- the selected external and local agent skills
+
+External skills are pinned by `flake.lock`. Local skills are linked from
+`repoPath/skills`, so edits in this repository are visible immediately.
+
+Home Manager generates `~/.bashrc` and inserts the contents of
+`dotfiles/bashrc` into it. The macOS-only `dotfiles/zshrc` is imported solely
+by the Darwin profile and is never installed by the Ubuntu profile.
+
+## History and synchronization
+
+Home Manager configures Bash to store history at:
+
+```text
+~/.local/state/bash/history
+```
+
+The history file is mutable state and is deliberately not added to the Nix
+store or Git. The Mac continues to use its separate Zsh history at
+`~/.zsh_history`.
+
+To share history between machines, synchronize the relevant history file with
+a state synchronization tool such as Syncthing. Do not commit shell history to
+the repository because it can contain sensitive commands, paths, hostnames, or
+tokens.
+
+Codex history is also mutable state, normally stored in
+`~/.codex/history.jsonl`. It is not managed by this flake. Avoid synchronizing
+the complete `~/.codex` directory: it can contain authentication data,
+machine-local databases, active SQLite files, and other device-specific state.
+
+## Updating
+
+Update all pinned inputs:
 
 ```bash
 cd ~/nix
 nix flake update
 ```
 
-## Adding Packages
+Then activate the appropriate configuration:
 
-### System Packages (Nixpkgs)
+```bash
+# macOS
+sudo darwin-rebuild switch --flake ~/nix#MacBook-Pro
 
-Edit `modules/darwin/packages.nix`:
-
-```nix
-environment.systemPackages = with pkgs; [
-  vim
-  wget
-  # Add your package here
-  ripgrep
-];
+# Ubuntu
+home-manager switch --flake ~/nix#kolja@ubuntu
 ```
 
-### User Packages (Home Manager)
+## Adding packages
 
-Edit `modules/home-manager/default.nix`:
+Portable Ubuntu CLI packages belong in:
 
-```nix
-home.packages = [
-  pkgs.python312
-  # Add your package here
-  pkgs.bat
-];
+```text
+modules/home-manager/packages-cli.nix
 ```
 
-### Homebrew Packages
+macOS system packages belong in:
 
-Edit `modules/darwin/homebrew.nix`:
-
-```nix
-brews = [
-  "mas"
-  # Add brew formula here
-];
-
-casks = [
-  "firefox"
-  # Add cask here
-];
-
-masApps = {
-  "Xcode" = 497799835;
-  # Add Mac App Store apps here
-};
+```text
+modules/darwin/packages.nix
 ```
 
-After editing any configuration file, run `dr` or the rebuild command.
+Homebrew formulae and applications belong in:
 
-## Configuration Modules
-
-### System Configuration
-
-- **packages.nix** - CLI tools, development tools, system utilities
-- **homebrew.nix** - Homebrew formulas, casks, and Mac App Store apps
-- **fonts.nix** - System fonts (Nerd Fonts, etc.)
-
-### User Configuration (Home Manager)
-
-- **programs/vscode.nix** - VSCode settings, keybindings, and extensions
-- **programs/git.nix** - Git user config, aliases, and global ignores
-- **shell.nix** - Shell aliases and environment variables
-- **dotfiles.nix** - Manages dotfiles (nvim, zshrc, etc.)
-
-## Tips
-
-- All configuration is declarative and version-controlled
-- Changes require a rebuild to take effect
-- Nix packages are isolated and don't conflict with system packages
-- You can search for packages at https://search.nixos.org/packages
-- Use `nix-shell -p <package>` to try packages temporarily
-
-## Troubleshooting
-
-### Git tree is dirty warning
-
-This is normal when you have uncommitted changes. The configuration will still build.
-
-### File conflicts during activation
-
-If home-manager reports file conflicts, you can either:
-- Back up and remove the existing file
-- Add `force = true` to the relevant configuration option
-
-### Permission issues
-
-Most darwin-rebuild commands require sudo for system-level changes.
+```text
+modules/darwin/homebrew.nix
+```

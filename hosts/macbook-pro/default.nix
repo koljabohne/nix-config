@@ -1,7 +1,7 @@
 { pkgs, config, lib, ... }:
 
 let
-  vars = import ../../vars.nix;
+  vars = import ./vars.nix;
 in
 {
   imports = [
@@ -24,7 +24,7 @@ in
   system.stateVersion = 5;
 
   # The platform the configuration will be used on
-  nixpkgs.hostPlatform = "aarch64-darwin";
+  nixpkgs.hostPlatform = vars.system;
 
   # Disable app linking warning
   system.activationScripts.applications.text = lib.mkForce "";
