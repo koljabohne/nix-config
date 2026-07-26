@@ -48,6 +48,17 @@
     let
       macbookVars = import ./hosts/macbook-pro/vars.nix;
       ubuntuVars = import ./hosts/ubuntu-cli/vars.nix;
+      loadLocalConfig =
+        repoPath:
+        let
+          configPath = builtins.toPath "${repoPath}/config.local.toml";
+        in
+        if builtins.pathExists configPath then
+          builtins.fromTOML (builtins.readFile configPath)
+        else
+          { };
+      macbookLocalConfig = loadLocalConfig macbookVars.repoPath;
+      ubuntuLocalConfig = loadLocalConfig ubuntuVars.repoPath;
     in
     {
       darwinConfigurations.${macbookVars.configurationName} = nix-darwin.lib.darwinSystem {
@@ -85,6 +96,7 @@
               extraSpecialArgs = {
                 inherit inputs;
                 hostVars = macbookVars;
+                localConfig = macbookLocalConfig;
               };
               useGlobalPkgs = true;
               useUserPackages = true;
@@ -105,6 +117,7 @@
           extraSpecialArgs = {
             inherit inputs;
             hostVars = ubuntuVars;
+            localConfig = ubuntuLocalConfig;
           };
           modules = [
             ./hosts/ubuntu-cli/default.nix

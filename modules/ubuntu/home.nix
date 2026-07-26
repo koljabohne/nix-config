@@ -8,7 +8,6 @@
   ];
 
   home.sessionVariables = {
-    NIX_CONFIG_REPO = hostVars.repoPath;
     NIX_CONFIG_BRANCH = hostVars.branch;
     NIX_CONFIG_FLAKE = hostVars.configurationName;
     NIX_REPO_URL = hostVars.repoUrl;

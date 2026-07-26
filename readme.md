@@ -59,6 +59,27 @@ in `modules/macos/system/packages.nix`; its Home Manager profile includes both
 Poetry and `uv`. Ubuntu installs the shared list plus its lean Python and `uv`
 environment through `modules/ubuntu/packages.nix`.
 
+## Private local configuration
+
+Each checkout has exactly one private configuration file in the repository
+root:
+
+```text
+config.local.toml
+```
+
+The file is ignored by Git. It contains scoped TOML configuration:
+
+```toml
+[git]
+username = "Your Name"
+email = "you@example.com"
+```
+
+Additional scopes can be added to the same file later. The `git` scope
+configures Git directly. Because the file is local and ignored, all rebuilds
+that use it must be evaluated with `--impure`.
+
 ## macOS
 
 The existing Mac configuration is available as `MacBook-Pro`.
@@ -66,13 +87,13 @@ The existing Mac configuration is available as `MacBook-Pro`.
 Initial activation:
 
 ```bash
-nix run nix-darwin -- switch --flake ~/nix#MacBook-Pro
+nix run nix-darwin -- switch --impure --flake ~/nix#MacBook-Pro
 ```
 
 Subsequent rebuilds:
 
 ```bash
-sudo darwin-rebuild switch --flake ~/nix#MacBook-Pro
+sudo darwin-rebuild switch --impure --flake ~/nix#MacBook-Pro
 ```
 
 The `nix-reb` alias runs the same rebuild command.
@@ -247,7 +268,7 @@ Then activate the appropriate configuration:
 
 ```bash
 # macOS
-sudo darwin-rebuild switch --flake ~/nix#MacBook-Pro
+sudo darwin-rebuild switch --impure --flake ~/nix#MacBook-Pro
 
 # Ubuntu
 home-manager switch --impure --flake ~/nix#ubuntu-cli

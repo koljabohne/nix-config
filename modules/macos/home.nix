@@ -3,7 +3,6 @@
 {
   imports = [
     ../common/home.nix
-    ./git.nix
     ./vscode.nix
     ./zsh.nix
   ];
@@ -19,7 +18,7 @@
   ];
 
   home.shellAliases = {
-    nix-reb = "sudo darwin-rebuild switch --flake ~/nix#MacBook-Pro";
+    nix-reb = "sudo darwin-rebuild switch --impure --flake ~/nix#MacBook-Pro";
     nix-open = "code ~/nix";
   };
 }

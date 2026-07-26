@@ -124,6 +124,18 @@ update_repository() {
   git clone --branch "$repo_branch" "$repo_url" "$repo_path"
 }
 
+prepare_local_config() {
+  local config_file="${repo_path}/config.local.toml"
+
+  if [ ! -e "$config_file" ]; then
+    log "Creating private local configuration"
+    (
+      umask 077
+      printf '[git]\\nusername = \"\"\\nemail = \"\"\\n' > "$config_file"
+    )
+  fi
+}
+
 activate_home_manager() {
   export USER="${USER:-$(id -un)}"
   export NIX_CONFIG_REPO="$repo_path"
@@ -141,6 +153,7 @@ activate_home_manager() {
 main() {
   install_prerequisites
   update_repository
+  prepare_local_config
   install_nix
   activate_home_manager
   log "Ubuntu CLI environment is ready. Start a new login shell."
