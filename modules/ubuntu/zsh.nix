@@ -77,6 +77,13 @@
     };
 
     initContent = ''
+      # Login inherits SHELL from /etc/passwd, which still names Bash. Report
+      # the shell actually in use, so tools that spawn "$SHELL" start ZSH
+      # directly instead of taking the Bash handover detour.
+      if [ -x "$HOME/.nix-profile/bin/zsh" ]; then
+        export SHELL="$HOME/.nix-profile/bin/zsh"
+      fi
+
       # Initialize fnm with automatic Node version switching.
       if command -v fnm >/dev/null 2>&1; then
         eval "$(fnm env --use-on-cd --shell zsh)"
