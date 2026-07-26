@@ -17,7 +17,6 @@
     nodejs_20
     pnpm_9
     go
-    jre_headless
 
     # Network and security
     wireguard-tools
@@ -26,9 +25,7 @@
     gnupg
     age
 
-    # Media and document tooling
-    ffmpeg
-    scdl
+    # Document tooling
     ocamlPackages.cpdf
   ];
 }

@@ -19,7 +19,6 @@
     nodejs_20
     pnpm_9
     go
-    jre_headless
 
     # Network & Security
     wireguard-tools
@@ -27,10 +26,6 @@
     sops
     gnupg
     age
-
-    # Media
-    ffmpeg
-    scdl # soundcloud downloader
 
     # System
     macpm

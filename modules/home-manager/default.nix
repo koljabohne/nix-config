@@ -12,7 +12,7 @@
 
   home.packages = [
     pkgs.python312
-    pkgs.poetry
+    pkgs.uv
   ];
 
   home.stateVersion = "24.05";

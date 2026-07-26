@@ -135,6 +135,7 @@ The Linux CLI profile includes:
 - Bash with completion, aliases, persistent history, and `dotfiles/bashrc`
 - Git and the global ignore file
 - Neovim and the repository's Neovim configuration
+- Python with `uv` for project and dependency management
 - common terminal and development tools
 - the selected external and local agent skills
 
