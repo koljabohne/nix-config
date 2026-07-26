@@ -93,13 +93,15 @@ The existing Mac configuration is available as `MacBook-Pro`.
 Initial activation:
 
 ```bash
-nix run nix-darwin -- switch --impure --flake ~/nix#MacBook-Pro
+sudo env NIX_CONFIG_REPO="$HOME/nix" \
+  nix run nix-darwin -- switch --impure --flake "$HOME/nix#MacBook-Pro"
 ```
 
 Subsequent rebuilds:
 
 ```bash
-sudo darwin-rebuild switch --impure --flake ~/nix#MacBook-Pro
+sudo env NIX_CONFIG_REPO="$HOME/nix" \
+  darwin-rebuild switch --impure --flake "$HOME/nix#MacBook-Pro"
 ```
 
 The `nix-reb` alias runs the same rebuild command.
