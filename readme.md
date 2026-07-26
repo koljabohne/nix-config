@@ -132,6 +132,10 @@ The script:
 - detects `x86_64-linux` or `aarch64-linux`
 - sets aside a malformed `config.local.toml` and recreates it, so a broken file
   cannot keep the flake from evaluating
+- adopts the account's existing Git identity when creating that file, taking
+  `user.name` and `user.email` from `git config --global`; `[git]` is left empty
+  unless both are set, because `modules/common/git.nix` requires either both or
+  neither
 - activates the `ubuntu-cli` Home Manager configuration
 
 The script never changes the login shell and never installs ZSH through `apt`.

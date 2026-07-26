@@ -27,6 +27,32 @@ run_as_root() {
   fi
 }
 
+# Escape a value for a TOML basic string. Backslashes first, then quotes.
+toml_escape() {
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+# Read the account's existing Git identity into git_username and git_email.
+read_git_identity() {
+  git_username=
+  git_email=
+
+  command -v git >/dev/null 2>&1 || return 0
+
+  # --global rather than the effective value: config.local.toml drives the
+  # global identity, and this script runs inside the repository checkout, whose
+  # own user.name must not leak in. The empty fallbacks keep set -e happy,
+  # because git config --get exits non-zero when the key is unset.
+  git_username="$(git config --global --get user.name 2>/dev/null || true)"
+  git_email="$(git config --global --get user.email 2>/dev/null || true)"
+
+  # modules/common/git.nix asserts that both are set or neither is.
+  if [ -z "$git_username" ] || [ -z "$git_email" ]; then
+    git_username=
+    git_email=
+  fi
+}
+
 detect_nix_system() {
   case "$(uname -m)" in
     x86_64)
@@ -157,9 +183,18 @@ prepare_local_config() {
     log "Creating private local configuration"
   fi
 
+  read_git_identity
+  if [ -n "$git_username" ]; then
+    log "Adopting the existing Git identity: ${git_username} <${git_email}>"
+  else
+    log "No complete Git identity found; leaving [git] empty"
+  fi
+
   (
     umask 077
-    printf '[git]\nusername = ""\nemail = ""\n' > "$config_file"
+    printf '[git]\nusername = "%s"\nemail = "%s"\n' \
+      "$(toml_escape "$git_username")" \
+      "$(toml_escape "$git_email")" > "$config_file"
   )
 }
 
