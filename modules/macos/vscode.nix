@@ -1,3 +1,4 @@
+# VS Code is part of the macOS desktop profile only.
 { pkgs, ... }:
 
 {

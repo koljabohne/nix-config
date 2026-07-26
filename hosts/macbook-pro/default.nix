@@ -5,9 +5,9 @@ let
 in
 {
   imports = [
-    ../../modules/darwin/packages.nix
-    ../../modules/darwin/homebrew.nix
-    ../../modules/darwin/fonts.nix
+    ../../modules/macos/system/packages.nix
+    ../../modules/macos/system/homebrew.nix
+    ../../modules/macos/system/fonts.nix
   ];
 
   nixpkgs.config.allowUnfree = true;

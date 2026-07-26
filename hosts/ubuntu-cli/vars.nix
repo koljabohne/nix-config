@@ -1,11 +1,33 @@
 let
-  user = "kolja";
-  home = "/home/${user}";
+  requireEnv =
+    name:
+    let
+      value = builtins.getEnv name;
+    in
+    if value == "" then
+      throw "Ubuntu CLI requires ${name}; evaluate it with --impure as the target user"
+    else
+      value;
+
+  user = requireEnv "USER";
+  home = requireEnv "HOME";
+  configuredRepoPath = builtins.getEnv "NIX_CONFIG_REPO";
+  configuredSystem = builtins.getEnv "NIX_SYSTEM";
 in
 {
   inherit user home;
 
-  system = "x86_64-linux";
-  configurationName = "${user}@ubuntu";
-  repoPath = "${home}/nix";
+  system =
+    if configuredSystem == "" then
+      "x86_64-linux"
+    else
+      configuredSystem;
+  configurationName = "ubuntu-cli";
+  repoUrl = "https://github.com/PracticalPassion/dotfiles.git";
+  branch = "main";
+  repoPath =
+    if configuredRepoPath == "" then
+      "${home}/nix"
+    else
+      configuredRepoPath;
 }

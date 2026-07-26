@@ -2,6 +2,6 @@
 
 {
   imports = [
-    ../../modules/home-manager/profiles/linux-cli.nix
+    ../../modules/ubuntu/home.nix
   ];
 }

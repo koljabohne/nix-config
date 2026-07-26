@@ -1,3 +1,4 @@
+# macOS Homebrew packages and applications.
 { ... }:
 
 {

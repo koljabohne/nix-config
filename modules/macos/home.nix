@@ -2,16 +2,20 @@
 
 {
   imports = [
-    ../default.nix
-    ../programs/vscode.nix
-    ../programs/zsh.nix
+    ../common/home.nix
+    ./git.nix
+    ./vscode.nix
+    ./zsh.nix
   ];
 
-  home.file.".zshrc".source = ../../../dotfiles/zshrc;
+  home.file.".zshrc".source = ../../dotfiles/zshrc;
 
   home.packages = [
     pkgs.nerd-fonts.jetbrains-mono
     pkgs.nerd-fonts.geist-mono
+    pkgs.python312
+    pkgs.poetry
+    pkgs.uv
   ];
 
   home.shellAliases = {

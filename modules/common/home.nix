@@ -1,7 +1,7 @@
-{ hostVars, pkgs, ... }:
+{ hostVars, ... }:
 {
   imports = [
-    ./programs/git.nix
+    ./git.nix
     ./dotfiles.nix
     ./shell.nix
     ./skills.nix
@@ -9,11 +9,6 @@
 
   home.username = hostVars.user;
   home.homeDirectory = hostVars.home;
-
-  home.packages = [
-    pkgs.python312
-    pkgs.uv
-  ];
 
   home.stateVersion = "24.05";
 

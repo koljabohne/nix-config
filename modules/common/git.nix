@@ -1,3 +1,4 @@
+# Git configuration shared by macOS and Ubuntu.
 { config, ... }:
 
 {
@@ -6,11 +7,6 @@
     signing.format = null;
 
     settings = {
-      user = {
-        name = "PracticalPassion";
-        email = "PracticalPassion@users.noreply.github.com";
-      };
-
       init = {
         defaultBranch = "main";
       };

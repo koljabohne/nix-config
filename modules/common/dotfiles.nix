@@ -1,3 +1,4 @@
+# Dotfiles shared by macOS and Ubuntu.
 { ... }:
 
 {

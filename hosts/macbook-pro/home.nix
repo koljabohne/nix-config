@@ -2,6 +2,6 @@
 
 {
   imports = [
-    ../../modules/home-manager/profiles/darwin.nix
+    ../../modules/macos/home.nix
   ];
 }

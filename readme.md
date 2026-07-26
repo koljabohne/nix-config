@@ -23,18 +23,25 @@ tools, shell configuration, Git, Neovim, and agent skills.
 │       ├── default.nix
 │       └── vars.nix
 ├── modules/
-│   ├── darwin/
-│   └── home-manager/
-│       ├── default.nix
-│       ├── packages-cli.nix
-│       ├── profiles/
-│       │   ├── darwin.nix
-│       │   └── linux-cli.nix
-│       └── programs/
-│           ├── bash.nix
-│           ├── git.nix
-│           ├── vscode.nix
-│           └── zsh.nix
+│   ├── common/
+│   │   ├── home.nix
+│   │   ├── packages.nix
+│   │   ├── dotfiles.nix
+│   │   ├── git.nix
+│   │   ├── shell.nix
+│   │   └── skills.nix
+│   ├── macos/
+│   │   ├── home.nix
+│   │   ├── vscode.nix
+│   │   ├── zsh.nix
+│   │   └── system/
+│   │       ├── fonts.nix
+│   │       ├── homebrew.nix
+│   │       └── packages.nix
+│   └── ubuntu/
+│       ├── home.nix
+│       ├── bash.nix
+│       └── packages.nix
 ├── dotfiles/
 │   ├── bashrc
 │   ├── zshrc
@@ -42,8 +49,15 @@ tools, shell configuration, Git, Neovim, and agent skills.
 └── skills/
 ```
 
-Host-specific values such as username, home directory, architecture, and
-repository path live in the corresponding `hosts/<host>/vars.nix`.
+Host-specific values such as architecture and repository path live in the
+corresponding `hosts/<host>/vars.nix`. The macOS username and home directory
+are static. Ubuntu reads `USER` and `HOME` from the target user's environment.
+
+`modules/common/packages.nix` is the shared CLI package list. macOS installs
+that list system-wide and appends its full desktop and development package set
+in `modules/macos/system/packages.nix`; its Home Manager profile includes both
+Poetry and `uv`. Ubuntu installs the shared list plus its lean Python and `uv`
+environment through `modules/ubuntu/packages.nix`.
 
 ## macOS
 
@@ -65,27 +79,79 @@ The `nix-reb` alias runs the same rebuild command.
 
 ## Ubuntu CLI
 
-### 1. Adjust the host variables
+### Automatic deployment
 
-Edit `hosts/ubuntu-cli/vars.nix` before activating the configuration:
+On a fresh Ubuntu server, run the deployment script as the account that should
+receive the Home Manager environment:
+
+```bash
+curl --fail --location \
+  https://raw.githubusercontent.com/PracticalPassion/dotfiles/main/scripts/deploy-ubuntu.sh \
+  | bash
+```
+
+The script:
+
+- installs the required Ubuntu packages
+- installs Nix in multi-user mode when necessary
+- clones the repository to `$HOME/nix`, or updates an existing clean clone
+- detects `x86_64-linux` or `aarch64-linux`
+- activates the `ubuntu-cli` Home Manager configuration
+
+The raw GitHub URL requires a public repository. For a private repository,
+transfer the script to the server through an authenticated channel first and
+run it locally. The clone URL, deployment branch, and clone location can be
+overridden:
+
+```bash
+export NIX_REPO_URL=git@github.com:PracticalPassion/dotfiles.git
+export NIX_CONFIG_BRANCH=main
+export NIX_CONFIG_REPO=/srv/nix-config
+
+curl --fail --location \
+  https://raw.githubusercontent.com/PracticalPassion/dotfiles/main/scripts/deploy-ubuntu.sh \
+  | bash
+```
+
+The SSH clone URL requires a configured SSH key on the server.
+
+After activation, the Ubuntu Bash environment provides:
+
+```text
+nix-reb      Apply the checked-out configuration
+nix-pull     Fast-forward the current repository branch
+nix-deploy   Pull the configured deployment branch and apply it
+nix-open     Open the repository in $EDITOR
+```
+
+### Manual deployment
+
+#### 1. Review the host variables
+
+`hosts/ubuntu-cli/vars.nix` reads the target account automatically:
 
 ```nix
 let
-  user = "kolja";
-  home = "/home/${user}";
+  user = requireEnv "USER";
+  home = requireEnv "HOME";
 in
 {
   inherit user home;
 
   system = "x86_64-linux";
-  configurationName = "${user}@ubuntu";
+  configurationName = "ubuntu-cli";
   repoPath = "${home}/nix";
 }
 ```
 
-Use `aarch64-linux` instead of `x86_64-linux` on an ARM Linux host.
+The deployment script sets `NIX_SYSTEM` automatically. For a manual deployment
+on ARM, export `NIX_SYSTEM=aarch64-linux` first. Set `NIX_CONFIG_REPO` before
+running Home Manager if the repository is not cloned to `$HOME/nix`.
 
-### 2. Install Nix
+Run the activation as the target account, not through `sudo`, so `USER` and
+`HOME` refer to the account that Home Manager should configure.
+
+#### 2. Install Nix
 
 On a normal Ubuntu system with systemd, install Nix in multi-user mode:
 
@@ -97,7 +163,7 @@ curl -L https://nixos.org/nix/install | sh -s -- --daemon
 
 Start a new login shell after the installer completes.
 
-### 3. Clone this repository
+#### 3. Clone this repository
 
 The clone location must match `repoPath` in `hosts/ubuntu-cli/vars.nix`:
 
@@ -106,14 +172,14 @@ git clone <repository-url> ~/nix
 cd ~/nix
 ```
 
-### 4. Activate Home Manager
+#### 4. Activate Home Manager
 
 The first activation can use Home Manager directly from its flake:
 
 ```bash
 nix --extra-experimental-features "nix-command flakes" \
   run github:nix-community/home-manager -- \
-  switch -b hm-backup --flake ~/nix#kolja@ubuntu
+  switch --impure -b hm-backup --flake ~/nix#ubuntu-cli
 ```
 
 The backup suffix prevents existing files such as `~/.bashrc` from being
@@ -122,7 +188,7 @@ bootstrap; the managed `~/.config/nix/nix.conf` enables flakes afterwards.
 Home Manager itself is also part of the activated profile:
 
 ```bash
-home-manager switch --flake ~/nix#kolja@ubuntu
+home-manager switch --impure --flake ~/nix#ubuntu-cli
 ```
 
 The `nix-reb` Bash alias runs this command using the values from the Ubuntu
@@ -184,25 +250,31 @@ Then activate the appropriate configuration:
 sudo darwin-rebuild switch --flake ~/nix#MacBook-Pro
 
 # Ubuntu
-home-manager switch --flake ~/nix#kolja@ubuntu
+home-manager switch --impure --flake ~/nix#ubuntu-cli
 ```
 
 ## Adding packages
 
-Portable Ubuntu CLI packages belong in:
+Packages shared by macOS and Ubuntu belong in:
 
 ```text
-modules/home-manager/packages-cli.nix
+modules/common/packages.nix
+```
+
+Ubuntu-only CLI packages belong in:
+
+```text
+modules/ubuntu/packages.nix
 ```
 
 macOS system packages belong in:
 
 ```text
-modules/darwin/packages.nix
+modules/macos/system/packages.nix
 ```
 
 Homebrew formulae and applications belong in:
 
 ```text
-modules/darwin/homebrew.nix
+modules/macos/system/homebrew.nix
 ```

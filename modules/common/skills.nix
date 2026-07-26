@@ -1,3 +1,4 @@
+# Agent skills shared by macOS and Ubuntu.
 { inputs, config, hostVars, ... }:
 
 let
