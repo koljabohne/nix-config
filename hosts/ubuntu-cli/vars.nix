@@ -20,10 +20,9 @@ in
   system =
     if configuredSystem == "" then
       "x86_64-linux"
-    else
+  else
       configuredSystem;
   configurationName = "ubuntu-cli";
-  repoUrl = "https://github.com/PracticalPassion/dotfiles.git";
   branch = "main";
   repoPath =
     if configuredRepoPath == "" then

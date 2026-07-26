@@ -2,8 +2,9 @@
 
 set -euo pipefail
 
-repo_url="${NIX_REPO_URL:-https://github.com/PracticalPassion/dotfiles.git}"
-repo_path="${NIX_CONFIG_REPO:-${HOME}/nix}"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+default_repo_path="$(cd -- "${script_dir}/.." && pwd -P)"
+repo_path="${NIX_CONFIG_REPO:-${default_repo_path}}"
 repo_branch="${NIX_CONFIG_BRANCH:-main}"
 flake_config="${NIX_CONFIG_FLAKE:-ubuntu-cli}"
 
@@ -86,9 +87,15 @@ install_prerequisites() {
 }
 
 install_nix() {
+  # A previous installer run may have completed without updating this active
+  # shell. Load its profile before deciding that Nix must be installed again.
+  load_nix_environment
+
   if command -v nix >/dev/null 2>&1; then
     return
   fi
+
+  prepare_nix_installer_shell_backup
 
   log "Installing Nix in multi-user mode"
   curl --fail --location https://nixos.org/nix/install | sh -s -- --daemon
@@ -97,31 +104,36 @@ install_nix() {
   command -v nix >/dev/null 2>&1 || fail "Nix was installed but is not available in PATH"
 }
 
-update_repository() {
-  if [ -d "${repo_path}/.git" ]; then
-    if [ -n "$(git -C "$repo_path" status --porcelain)" ]; then
-      fail "repository has local changes: ${repo_path}"
-    fi
+prepare_nix_installer_shell_backup() {
+  local bashrc="${NIX_INSTALLER_BASHRC:-/etc/bash.bashrc}"
+  local installer_backup="${NIX_INSTALLER_BASHRC_BACKUP:-/etc/bash.bashrc.backup-before-nix}"
+  local recovery_root="${NIX_INSTALLER_BACKUP_ROOT:-/var/backups/nix-installer-preflight}"
+  local recovery_dir
 
-    log "Updating ${repo_path} from origin/${repo_branch}"
-    git -C "$repo_path" fetch origin "$repo_branch"
-
-    if git -C "$repo_path" show-ref --verify --quiet "refs/heads/${repo_branch}"; then
-      git -C "$repo_path" switch "$repo_branch"
-    else
-      git -C "$repo_path" switch --create "$repo_branch" --track "origin/${repo_branch}"
-    fi
-
-    git -C "$repo_path" pull --ff-only origin "$repo_branch"
+  if [ ! -e "$installer_backup" ]; then
     return
   fi
 
-  if [ -e "$repo_path" ] && [ -n "$(find "$repo_path" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
-    fail "target exists and is not an empty Git repository: ${repo_path}"
+  [ -f "$bashrc" ] || fail "expected shell profile does not exist: ${bashrc}"
+  [ -f "$installer_backup" ] || fail "Nix installer backup is not a regular file: ${installer_backup}"
+
+  recovery_dir="${recovery_root}/$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  log "Preserving existing Nix installer shell backups in ${recovery_dir}"
+  run_as_root install -d -m 0700 "$recovery_dir"
+  run_as_root cp -a -- "$bashrc" "${recovery_dir}/bash.bashrc"
+  run_as_root cp -a -- "$installer_backup" "${recovery_dir}/bash.bashrc.backup-before-nix"
+
+  if run_as_root grep -Eiq '(^|[^[:alnum:]_])nix([^[:alnum:]_]|$)|NIX_' "$installer_backup"; then
+    fail "${installer_backup} contains Nix-related content; preserved copies are in ${recovery_dir}"
   fi
 
-  log "Cloning ${repo_url} to ${repo_path}"
-  git clone --branch "$repo_branch" "$repo_url" "$repo_path"
+  log "Restoring the clean pre-Nix shell profile before installation"
+  run_as_root mv -- "$installer_backup" "$bashrc"
+}
+
+validate_repository() {
+  [ -d "${repo_path}/.git" ] || fail "deployment must run from a Git checkout: ${repo_path}"
+  [ -f "${repo_path}/flake.nix" ] || fail "flake.nix is missing from repository: ${repo_path}"
 }
 
 prepare_local_config() {
@@ -141,8 +153,12 @@ activate_home_manager() {
   export NIX_CONFIG_REPO="$repo_path"
   export NIX_CONFIG_BRANCH="$repo_branch"
   export NIX_CONFIG_FLAKE="$flake_config"
-  export NIX_REPO_URL="$repo_url"
   export NIX_SYSTEM="${NIX_SYSTEM:-$(detect_nix_system)}"
+  if [ -n "${NIX_CONFIG:-}" ]; then
+    export NIX_CONFIG="${NIX_CONFIG}"$'\n''extra-experimental-features = nix-command flakes'
+  else
+    export NIX_CONFIG="extra-experimental-features = nix-command flakes"
+  fi
 
   log "Activating ${flake_config} for ${USER} on ${NIX_SYSTEM}"
   nix --extra-experimental-features "nix-command flakes" \
@@ -152,11 +168,13 @@ activate_home_manager() {
 
 main() {
   install_prerequisites
-  update_repository
+  validate_repository
   prepare_local_config
   install_nix
   activate_home_manager
   log "Ubuntu CLI environment is ready. Start a new login shell."
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

@@ -60,6 +60,11 @@ in `modules/macos/system/packages.nix`; its Home Manager profile includes both
 Poetry and `uv`. Ubuntu installs the shared list plus its lean Python and `uv`
 environment through `modules/ubuntu/packages.nix`.
 
+The Ubuntu Bash profile uses Oh My Bash with the same `robbyrussell` theme as
+the macOS ZSH profile, plus Git and Docker completions. `ble.sh` adds inline
+history suggestions, syntax highlighting, and enhanced completion without
+requiring a desktop environment.
+
 ## Private local configuration
 
 Each checkout has exactly one private configuration file in the repository
@@ -110,46 +115,38 @@ The `nix-reb` alias runs the same rebuild command.
 
 ### Automatic deployment
 
-On a fresh Ubuntu server, run the deployment script as the account that should
-receive the Home Manager environment:
+On a fresh Ubuntu server, clone the repository and run its deployment script
+as the account that should receive the Home Manager environment:
 
 ```bash
-curl --fail --location \
-  https://raw.githubusercontent.com/PracticalPassion/dotfiles/main/scripts/deploy-ubuntu.sh \
-  | bash
+git clone <repository-url> ~/nix
+~/nix/scripts/deploy-ubuntu.sh
 ```
 
 The script:
 
 - installs the required Ubuntu packages
 - installs Nix in multi-user mode when necessary
-- clones the repository to `$HOME/nix`, or updates an existing clean clone
+- uses the existing checkout without cloning, fetching, or pulling
+- safely repairs a stale `/etc/bash.bashrc.backup-before-nix` after preserving
+  both shell files under `/var/backups/nix-installer-preflight/`
 - detects `x86_64-linux` or `aarch64-linux`
 - activates the `ubuntu-cli` Home Manager configuration
 
-The raw GitHub URL requires a public repository. For a private repository,
-transfer the script to the server through an authenticated channel first and
-run it locally. The clone URL, deployment branch, and clone location can be
-overridden:
+By default, the repository root is derived from the location of the deployment
+script. `NIX_CONFIG_REPO` can override it when necessary:
 
 ```bash
-export NIX_REPO_URL=git@github.com:PracticalPassion/dotfiles.git
-export NIX_CONFIG_BRANCH=main
 export NIX_CONFIG_REPO=/srv/nix-config
-
-curl --fail --location \
-  https://raw.githubusercontent.com/PracticalPassion/dotfiles/main/scripts/deploy-ubuntu.sh \
-  | bash
+/srv/nix-config/scripts/deploy-ubuntu.sh
 ```
-
-The SSH clone URL requires a configured SSH key on the server.
 
 After activation, the Ubuntu Bash environment provides:
 
 ```text
 nix-reb      Apply the checked-out configuration
 nix-pull     Fast-forward the current repository branch
-nix-deploy   Pull the configured deployment branch and apply it
+nix-deploy   Apply the existing checkout
 nix-open     Open the repository in $EDITOR
 ```
 
@@ -206,7 +203,7 @@ cd ~/nix
 The first activation can use Home Manager directly from its flake:
 
 ```bash
-nix --extra-experimental-features "nix-command flakes" \
+NIX_CONFIG="extra-experimental-features = nix-command flakes" nix \
   run github:nix-community/home-manager -- \
   switch --impure -b hm-backup --flake ~/nix#ubuntu-cli
 ```

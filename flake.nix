@@ -30,6 +30,11 @@
       url = "github:mattpocock/skills";
       flake = false;
     };
+
+    oh-my-bash = {
+      url = "github:ohmybash/oh-my-bash";
+      flake = false;
+    };
   };
 
   outputs =
