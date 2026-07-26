@@ -1,4 +1,4 @@
-{ inputs, ... }:
+{ inputs, config, ... }:
 
 let
   skillsRepo = inputs.mattpocock-skills;
@@ -51,6 +51,11 @@ let
     "in-progress/writing-beats"
   ];
 
+  # List of local custom skills (directories in nix/skills/)
+  localSkills = [
+    "okf-obsidian-graph"
+  ];
+
   # Helper function to get the name of the skill from its path (e.g. "engineering/tdd" -> "tdd")
   getSkillName = path: builtins.baseNameOf path;
 
@@ -70,8 +75,18 @@ let
       ".gemini/config/skills/${name}".source = src;
     };
 
+  # Generate home.file mappings for local custom skills using out-of-store symlinks
+  mkLocalSkillFiles = name: {
+    ".agents/skills/${name}".source = config.lib.file.mkOutOfStoreSymlink "${config.home.homeDirectory}/nix/skills/${name}";
+    ".claude/skills/${name}".source = config.lib.file.mkOutOfStoreSymlink "${config.home.homeDirectory}/nix/skills/${name}";
+    ".gemini/config/skills/${name}".source = config.lib.file.mkOutOfStoreSymlink "${config.home.homeDirectory}/nix/skills/${name}";
+  };
+
   # Merge all attribute sets
-  allSkillFiles = builtins.foldl' (acc: path: acc // mkSkillFiles path) {} skills;
+  externalSkillFiles = builtins.foldl' (acc: path: acc // mkSkillFiles path) {} skills;
+  localSkillFiles = builtins.foldl' (acc: name: acc // mkLocalSkillFiles name) {} localSkills;
+  
+  allSkillFiles = externalSkillFiles // localSkillFiles;
 in
 {
   home.file = allSkillFiles;

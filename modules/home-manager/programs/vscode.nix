@@ -46,6 +46,8 @@
         aaron-bond.better-comments
         janisdd.vscode-edit-csv
         openai.chatgpt
+        mikhail-arkhipov.r
+
 
         # Nix
         bbenoist.nix
@@ -74,6 +76,7 @@
         "editor.suggestSelection" = "first";
         "editor.suggest.showIcons" = true;
         "editor.suggest.showStatusBar" = true;
+        "accessibility.signalOptions.volume" = 0;
 
         # LaTeX
         "latex-workshop.docker.enabled" = true;
@@ -121,6 +124,12 @@
         "[bibtex]" = {
           "editor.defaultFormatter" = "James-Yu.latex-workshop";
         };
+        # R
+        "[r]" = {
+          "editor.defaultFormatter" = "reditorsupport.r";
+          "interpreterPath" = "/opt/homebrew/Caskroom/miniconda/base/bin/R";
+        };
+        "r.interpreterPath" = "/opt/homebrew/Caskroom/miniconda/base/bin/R";
       };
 
       keybindings = [
