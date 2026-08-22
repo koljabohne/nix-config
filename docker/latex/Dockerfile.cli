@@ -1,0 +1,22 @@
+# ==============================================================================
+# latex-cli - Schneller lokaler Compiler (LaTeX Workshop-kompatibel)
+#
+# Herkunft: Projects/Server/apps/overleaf/lib/overleaf/Dockerfile (Stage 2)
+# Setzt voraus, dass latex-base bereits gebaut wurde.
+# ==============================================================================
+ARG BASE_IMAGE=latex-base
+FROM ${BASE_IMAGE}
+
+# ---- latexindent + Perl-Abhängigkeiten (für LaTeX Workshop) ----
+RUN tlmgr install latexindent xstring && \
+    apt-get update && apt-get install -y \
+    liblog-log4perl-perl \
+    liblog-dispatch-perl \
+    libyaml-tiny-perl \
+    libfile-homedir-perl \
+    libunicode-linebreak-perl \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workdir
+
+

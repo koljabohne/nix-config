@@ -1,0 +1,110 @@
+# ==============================================================================
+# latex-base - Gemeinsame TeX Live 2026 Umgebung
+#
+# Herkunft: Projects/Server/apps/overleaf/lib/overleaf/Dockerfile (Stage 1)
+# Bauen:    latex-image  (siehe modules/common/latex-docker.nix)
+# ==============================================================================
+FROM phusion/baseimage:noble-1.0.2 AS latex-base
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Makes sure LuaTex cache is writable (Overleaf-spezifischer Pfad)
+ENV TEXMFVAR=/var/lib/overleaf/tmp/texmf-var
+
+# ---- System dependencies (shared) ----
+RUN apt-get update && apt-get install -y \
+    wget \
+    curl \
+    perl \
+    python3 \
+    python-is-python3 \
+    build-essential \
+    qpdf \
+    unzip \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---- Stable CTAN mirror (FAU - zuverlässig für TeX Live 2026) ----
+ARG TEXLIVE_MIRROR=https://ftp.fau.de/ctan/systems/texlive/tlnet
+
+# ---- Install TeX Live 2026 (basic scheme, ohne Docs/Sources) ----
+RUN wget ${TEXLIVE_MIRROR}/install-tl-unx.tar.gz && \
+    mkdir /tmp/install-tl && \
+    tar -xzf install-tl-unx.tar.gz -C /tmp/install-tl --strip-components=1 && \
+    /tmp/install-tl/install-tl \
+    --scheme=basic \
+    --no-doc-install \
+    --no-src-install \
+    --no-interaction \
+    --location ${TEXLIVE_MIRROR} && \
+    rm -rf /tmp/install-tl install-tl-unx.tar.gz
+
+# ---- PATH fix (architektur-agnostisch für TeX Live 2026) ----
+RUN ln -s /usr/local/texlive/2026/bin/$(uname -m)-linux /usr/local/texlive/bin
+ENV PATH="/usr/local/texlive/bin:${PATH}"
+
+# ---- tlmgr mirror pinnen ----
+RUN tlmgr option repository ${TEXLIVE_MIRROR} && \
+    tlmgr update --self
+
+# ---- Overleaf-Pflichtpakete ----
+RUN tlmgr install \
+    latexmk \
+    texcount \
+    synctex \
+    etoolbox \
+    xetex
+
+# ---- Collections ----
+RUN tlmgr install \
+    collection-latexrecommended \
+    collection-fontsrecommended \
+    collection-fontsextra \
+    collection-bibtexextra \
+    collection-langgerman
+
+# ---- Mathe & Naturwissenschaften ----
+RUN tlmgr install \
+    amsmath amsfonts amscls mathtools physics siunitx \
+    ieeetran
+
+# ---- Layout & Typografie ----
+RUN tlmgr install \
+    geometry microtype setspace parskip titlesec fancyhdr cleveref
+
+# ---- Tabellen & Abbildungen ----
+RUN tlmgr install \
+    booktabs multirow caption float
+
+# ---- Grafik ----
+RUN tlmgr install \
+    pgf pgfplots
+
+# ---- Bibliografie ----
+RUN tlmgr install \
+    biber biblatex
+
+# ---- Referenzen & Code ----
+RUN tlmgr install \
+    hyperref bookmark listings minted csquotes
+
+RUN tlmgr install \
+    enumitem tcolorbox beamer pdfcol tikzfill
+
+
+RUN kpsewhich IEEEtran.cls && \
+    kpsewhich amsmath.sty && \
+    kpsewhich biblatex.sty && \
+    kpsewhich hyperref.sty && \
+    kpsewhich minted.sty && \
+    kpsewhich ngerman.ldf
+
+# ---- Filename-DB + Formate neu bauen ----
+RUN texhash && \
+    fmtutil-sys --all \
+    --no-error-if-no-engine=luametatex,luajithbtex,luajittex,mfluajit \
+    || true
+
+WORKDIR /workdir
+
+

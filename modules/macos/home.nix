@@ -3,6 +3,7 @@
 {
   imports = [
     ../common/home.nix
+    ../common/latex-docker.nix
     ./vscode.nix
     ./zsh.nix
   ];

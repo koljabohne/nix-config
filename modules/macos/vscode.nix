@@ -131,9 +131,10 @@
           "interpreterPath" = "/opt/homebrew/Caskroom/miniconda/base/bin/R";
         };
         "r.interpreterPath" = "/opt/homebrew/Caskroom/miniconda/base/bin/R";
+        "editor.accessibilitySupport"= "on";
       };
 
-      keybindings = [
+  keybindings = [
         {
           key = "cmd+d";
           command = "workbench.action.terminal.toggleTerminal";
@@ -215,10 +216,15 @@
           when = "editorFocus";
         }
         {
-        key = "cmd+alt+o";
-        command = "workbench.action.tasks.runTask";
-        args = "open-file-rel";
-      }
+          key = "cmd+alt+o";
+          command = "workbench.action.tasks.runTask";
+          args = "open-file-rel";
+        }
+      {
+          key = "cmd+right";
+          command = "editor.action.inlineSuggest.acceptNextWord";
+          when = "inlineSuggestionVisible && !editorReadonly";
+        }
       ];
     };
   };

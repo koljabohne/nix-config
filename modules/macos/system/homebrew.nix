@@ -23,6 +23,7 @@
     ];
 
     casks = [
+      "inkscape"
       "firefox"
       "KeePassXC"
       "rstudio"
