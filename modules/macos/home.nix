@@ -9,6 +9,22 @@
   ];
 
   home.file.".zshrc".source = ../../dotfiles/zshrc;
+  home.file."Library/Application Support/com.mitchellh.ghostty/config".source = ../../dotfiles/ghostty/config;
+
+  home.file.".condarc".text = ''
+    channels:
+      - conda-forge
+      - defaults
+    auto_activate_base: true
+  '';
+
+  home.file.".config/uv/uv.toml".text = ''
+    # Global Astral uv configuration
+    # Reference: https://docs.astral.sh/uv/reference/settings/
+
+    [pip]
+    color = true
+  '';
 
   home.packages = [
     pkgs.nerd-fonts.jetbrains-mono

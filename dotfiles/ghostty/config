@@ -1,0 +1,15 @@
+font-family = JetBrainsMono Nerd Font
+window-title-font-family = JetBrainsMono Nerd Font
+font-size = 14
+
+cursor-style = block
+
+#theme = GitHub Dark
+#theme = Peppermint
+
+#theme = dark:Abernathy,light:Alabaster
+#background = 000000 
+window-titlebar-background = 000000
+window-titlebar-foreground = ffffff
+window-theme = auto
+keybind = shift+enter=text:\x1b\r

@@ -24,6 +24,7 @@
 
     casks = [
       "inkscape"
+      "vorssaint"
       "firefox"
       "KeePassXC"
       "rstudio"
@@ -43,6 +44,7 @@
       "deepl"
       "iterm2"
       "docker-desktop"
+      "ghostty"
     ];
 
     masApps = {
@@ -50,7 +52,7 @@
       # "Magnet" = 441258766;
     };
 
-    onActivation.cleanup = "zap";
+    onActivation.cleanup = "none";
     onActivation.upgrade = true;
   };
 }
