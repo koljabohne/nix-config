@@ -24,4 +24,11 @@
 
   # Disable app linking warning
   system.activationScripts.applications.text = lib.mkForce "";
+
+  # Enable Touch ID for sudo (including inside tmux/screen)
+  security.pam.services.sudo_local = {
+    enable = true;
+    touchIdAuth = true;
+    reattach = true;
+  };
 }

@@ -98,7 +98,8 @@ Initial activation:
 
 ```bash
 sudo env NIX_CONFIG_REPO="$HOME/nix" \
-  nix run nix-darwin -- switch --impure --flake "$HOME/nix#MacBook-Pro"
+  nix --extra-experimental-features 'nix-command flakes' \
+  run nix-darwin -- switch --impure --flake "$HOME/nix#MacBook-Pro"
 ```
 
 Subsequent rebuilds:
