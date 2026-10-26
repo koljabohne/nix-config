@@ -4,57 +4,45 @@
 let
   skillsRepo = inputs.mattpocock-skills;
   
-  # List of skills to link (relative to the repo's skills/ directory)
-  skills = [
-    # engineering
-    "engineering/ask-matt"
-    "engineering/diagnosing-bugs"
-    "engineering/grill-with-docs"
-    "engineering/triage"
-    "engineering/improve-codebase-architecture"
-    "engineering/setup-matt-pocock-skills"
-    "engineering/tdd"
-    "engineering/to-spec"
-    "engineering/to-tickets"
-    "engineering/wayfinder"
-    "engineering/implement"
-    "engineering/prototype"
-    "engineering/research"
-    "engineering/domain-modeling"
-    "engineering/codebase-design"
-    "engineering/code-review"
-    "engineering/resolving-merge-conflicts"
+  skillsDir = "${skillsRepo}/skills";
+  topEntries = builtins.readDir skillsDir;
 
-    # productivity
-    "productivity/grill-me"
-    "productivity/grilling"
-    "productivity/handoff"
-    "productivity/teach"
-    "productivity/writing-great-skills"
+  # Auto-discover skills in skillsRepo:
+  # 1. Direct skills located at skills/<name>/SKILL.md
+  directSkills = builtins.filter
+    (name: topEntries.${name} == "directory" && builtins.pathExists "${skillsDir}/${name}/SKILL.md")
+    (builtins.attrNames topEntries);
 
-    # misc
-    "misc/setup-pre-commit"
-    "misc/git-guardrails-claude-code"
-    "misc/scaffold-exercises"
-    "misc/migrate-to-shoehorn"
+  # 2. Categorized skills located at skills/<category>/<name>/SKILL.md (e.g. engineering, productivity)
+  categories = builtins.filter
+    (name: topEntries.${name} == "directory" && name != "deprecated" && !builtins.pathExists "${skillsDir}/${name}/SKILL.md")
+    (builtins.attrNames topEntries);
 
-    # personal
-    "personal/obsidian-vault"
-    "personal/edit-article"
+  getSkillsInCat = cat:
+    let
+      catDir = "${skillsDir}/${cat}";
+      subEntries = builtins.readDir catDir;
+      skillNames = builtins.filter
+        (name: subEntries.${name} == "directory" && builtins.pathExists "${catDir}/${name}/SKILL.md")
+        (builtins.attrNames subEntries);
+    in
+      map (name: "${cat}/${name}") skillNames;
 
-    # in-progress
-    "in-progress/setup-ts-deep-modules"
-    "in-progress/loop-me"
-    "in-progress/wizard"
-    "in-progress/writing-fragments"
-    "in-progress/writing-shape"
-    "in-progress/claude-handoff"
-    "in-progress/writing-beats"
-  ];
+  discoveredSkills = directSkills ++ (builtins.concatLists (map getSkillsInCat categories));
+
+  # Skills to exclude if any (by base name or full path)
+  excludedSkills = [ ];
+
+  skills = builtins.filter
+    (s: !(builtins.elem s excludedSkills) && !(builtins.elem (builtins.baseNameOf s) excludedSkills))
+    discoveredSkills;
 
   # List of local custom skills (directories in nix/skills/)
   localSkills = [
+    "academic-pptx"
     "okf-obsidian-graph"
+    "repo-experiment-story"
+    "setup-agent-standards"
   ];
 
   # Helper function to get the name of the skill from its path (e.g. "engineering/tdd" -> "tdd")
