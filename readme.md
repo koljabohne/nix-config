@@ -110,6 +110,8 @@ sudo env NIX_CONFIG_REPO="$HOME/nix" \
 ```
 
 The `nix-reb` alias runs the same rebuild command.
+The `nix-update` alias runs `nix flake update --flake "$HOME/nix" && nix-reb` to update all inputs and rebuild.
+The `nix-update-vscode` alias updates only `nixpkgs` and `nix-vscode-extensions` before rebuilding.
 
 ## Ubuntu CLI
 
@@ -158,6 +160,7 @@ nix-reb      Apply the checked-out configuration
 nix-pull     Fast-forward the current repository branch
 nix-deploy   Apply the existing checkout
 nix-open     Open the repository in $EDITOR
+nix-update   Update flake inputs and apply configuration
 ```
 
 ### Manual deployment

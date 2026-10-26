@@ -11,11 +11,13 @@ with pkgs;
   tmux
   nmap
   fzf
+  dust
 
   # Development
+  gh
   fnm
-  nodejs_20
-  pnpm_9
+  nodejs_22
+  pnpm
   go
 
   # Network and security

@@ -74,6 +74,7 @@
       nix-pull = "git -C ${hostVars.repoPath} pull --ff-only";
       nix-deploy = "${hostVars.repoPath}/scripts/deploy-ubuntu.sh";
       nix-open = "$EDITOR ${hostVars.repoPath}";
+      nix-update = "nix flake update --flake ${hostVars.repoPath} && nix-reb";
     };
 
     initContent = ''

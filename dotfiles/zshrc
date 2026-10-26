@@ -6,6 +6,8 @@ alias vi=nvim
 # Nix-darwin management aliases
 alias nix-reb='sudo env NIX_CONFIG_REPO="$HOME/nix" darwin-rebuild switch --impure --flake "$HOME/nix#MacBook-Pro"'
 alias nix-open='code ~/nix'
+alias nix-update='nix flake update --flake "$HOME/nix" && nix-reb'
+alias nix-update-vscode='nix flake update --flake "$HOME/nix" nixpkgs nix-vscode-extensions && nix-reb'
 
 # Lazy load fnm (only when needed)
 eval "$(fnm env --use-on-cd --shell zsh)"

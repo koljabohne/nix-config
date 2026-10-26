@@ -21,9 +21,6 @@
   home.file.".config/uv/uv.toml".text = ''
     # Global Astral uv configuration
     # Reference: https://docs.astral.sh/uv/reference/settings/
-
-    [pip]
-    color = true
   '';
 
   home.packages = [
@@ -37,5 +34,7 @@
   home.shellAliases = {
     nix-reb = "sudo env NIX_CONFIG_REPO=\"$HOME/nix\" darwin-rebuild switch --impure --flake \"$HOME/nix#MacBook-Pro\"";
     nix-open = "code ~/nix";
+    nix-update = "nix flake update --flake \"$HOME/nix\" && nix-reb";
+    nix-update-vscode = "nix flake update --flake \"$HOME/nix\" nixpkgs nix-vscode-extensions && nix-reb";
   };
 }
