@@ -4,15 +4,11 @@
 {
   programs.vscode = {
     enable = true;
-    mutableExtensionsDir = true;
+    mutableExtensionsDir = false;
 
     profiles.default = {
       extensions = with pkgs.vscode-marketplace; [
-        # R
-        reditorsupport.r
-        rdebugger.r-debugger
-        reditorsupport.r-syntax
-        ikuyadeu.r-pack
+
 
         # common
         jack89ita.open-file-from-path
@@ -27,7 +23,8 @@
         ms-python.debugpy
         ms-toolsai.jupyter-renderers
         anthropic.claude-code
-
+        marp-team.marp-vscode
+        
         # LaTeX
         xrimson.bibtex-tidy
         james-yu.latex-workshop
@@ -48,6 +45,8 @@
         janisdd.vscode-edit-csv
         openai.chatgpt
         mikhail-arkhipov.r
+        google.google-antigravity
+
 
 
         # Nix
@@ -67,6 +66,8 @@
 
       userSettings = {
         "update.mode" = "none";
+        "extensions.autoUpdate" = false;
+        "extensions.autoCheckUpdates" = false;
         "terminal.integrated.inheritEnv" = false;
         "terminal.integrated.suggest.enabled" = false;
         "settingsSync.ignoredExtensions" = [];
@@ -125,13 +126,15 @@
         "[bibtex]" = {
           "editor.defaultFormatter" = "James-Yu.latex-workshop";
         };
-        # R
-        "[r]" = {
-          "editor.defaultFormatter" = "reditorsupport.r";
-          "interpreterPath" = "/opt/homebrew/Caskroom/miniconda/base/bin/R";
-        };
+
         "r.interpreterPath" = "/opt/homebrew/Caskroom/miniconda/base/bin/R";
         "editor.accessibilitySupport"= "on";
+        "claudeCode.hideOnboarding" = true;
+        "files.associations" = {
+          "flake.lock" = "json";
+          "*.rmd" = "markdown";
+        };
+        "python.analysis.excludeLibraryDiagnostics" = false;
       };
 
   keybindings = [
@@ -220,7 +223,7 @@
           command = "workbench.action.tasks.runTask";
           args = "open-file-rel";
         }
-      {
+        {
           key = "cmd+right";
           command = "editor.action.inlineSuggest.acceptNextWord";
           when = "inlineSuggestionVisible && !editorReadonly";

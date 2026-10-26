@@ -74,7 +74,7 @@ RUN tlmgr install \
 
 # ---- Tabellen & Abbildungen ----
 RUN tlmgr install \
-    booktabs multirow caption float
+    booktabs multirow caption float threeparttable
 
 # ---- Grafik ----
 RUN tlmgr install \
@@ -91,12 +91,24 @@ RUN tlmgr install \
 RUN tlmgr install \
     enumitem tcolorbox beamer pdfcol tikzfill
 
+# ---- FH-Wedel-Thesis-Vorlage (KOMA-Patch, Kapitelstil, Abkürzungen, Tabellen) ----
+RUN tlmgr install \
+    scrhack quotchap acronym wrapfig makecell \
+    bigfoot setspaceenhanced
+
+
+# ---- Absolute Positionierung in Präsentationen ----
+RUN tlmgr install textpos
 
 RUN kpsewhich IEEEtran.cls && \
     kpsewhich amsmath.sty && \
     kpsewhich biblatex.sty && \
     kpsewhich hyperref.sty && \
     kpsewhich minted.sty && \
+    kpsewhich threeparttable.sty && \
+    kpsewhich scrhack.sty && \
+    kpsewhich quotchap.sty && \
+    kpsewhich textpos.sty && \
     kpsewhich ngerman.ldf
 
 # ---- Filename-DB + Formate neu bauen ----
