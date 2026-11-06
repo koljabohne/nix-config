@@ -25,6 +25,7 @@
       "zsh-syntax-highlighting"
       "herdr"
       "bun"
+      "skillshare"
     ];
 
     casks = [

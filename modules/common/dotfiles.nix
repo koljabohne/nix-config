@@ -7,6 +7,10 @@
     ".config/nix/nix.conf".source = ../../dotfiles/nix.conf;
     ".config/herdr/config.toml".source = ../../dotfiles/herdr/config.toml;
     ".config/herdr/plugins.txt".source = ../../dotfiles/herdr/plugins.txt;
+    ".config/herdr-app/mods/skillshare".source = ../../dotfiles/herdr-app/mods/skillshare;
+    ".config/herdr-app/layouts".source = ../../dotfiles/herdr-app/layouts;
+    ".config/herdr/mods/skillshare".source = ../../dotfiles/herdr-app/mods/skillshare;
+    ".config/herdr/layouts".source = ../../dotfiles/herdr-app/layouts;
   };
 
   home.activation.herdrPlugins = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
