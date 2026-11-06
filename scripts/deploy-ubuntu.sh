@@ -220,11 +220,17 @@ activate_home_manager() {
 }
 
 install_herdr() {
-  if command -v herdr >/dev/null 2>&1; then
-    return
+  if ! command -v herdr >/dev/null 2>&1 && ! [ -x "$HOME/.local/bin/herdr" ]; then
+    log "Installing Herdr CLI"
+    curl -fsSL https://herdr.dev/install.sh | sh
   fi
-  log "Installing Herdr"
-  curl -fsSL https://herdr.dev/install.sh | sh
+  if ! command -v hc >/dev/null 2>&1 && ! [ -x "$HOME/.local/bin/hc" ]; then
+    log "Installing Herdr Core (hc)"
+    curl -fsSL https://releases.herdr.dev/core/install.sh | sh
+  fi
+  if command -v loginctl >/dev/null 2>&1; then
+    loginctl enable-linger "$USER" 2>/dev/null || true
+  fi
 }
 
 main() {
