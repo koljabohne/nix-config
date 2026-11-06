@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ pkgs, lib, ... }:
 
 {
   imports = [
@@ -7,6 +7,13 @@
     ./vscode.nix
     ./zsh.nix
   ];
+
+  # Install Herdr Desktop App if not already present
+  home.activation.herdrApp = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+    if [ ! -d "$HOME/Applications/Herdr.app" ] && [ ! -d "/Applications/Herdr.app" ]; then
+      $DRY_RUN_CMD curl -fsSL https://releases.herdr.dev/app/install.sh | sh 2>/dev/null || true
+    fi
+  '';
 
   home.file.".zshrc".source = ../../dotfiles/zshrc;
   home.file."Library/Application Support/com.mitchellh.ghostty/config".source = ../../dotfiles/ghostty/config;
