@@ -117,6 +117,7 @@
                 hostVars = macbookVars;
                 localConfig = macbookLocalConfig;
               };
+              backupFileExtension = "backup";
               useGlobalPkgs = true;
               useUserPackages = true;
               users.${macbookVars.user} = import ./hosts/macbook-pro/home.nix;
