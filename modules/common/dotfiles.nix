@@ -20,7 +20,7 @@
         plugin="$(echo "$plugin" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
         [ -z "$plugin" ] && continue
         case "$plugin" in \#*) continue ;; esac
-        $DRY_RUN_CMD herdr plugin install "$plugin" 2>/dev/null || true
+        $DRY_RUN_CMD herdr plugin install "$plugin" --yes 2>/dev/null || true
       done < "$plugins_file"
     fi
   '';
