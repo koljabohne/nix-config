@@ -1,0 +1,49 @@
+# Herdr Configuration (~/.config/herdr/config.toml)
+# Documentation: https://herdr.dev
+
+onboarding = false
+
+[theme]
+# "terminal" adapts to your terminal emulator colors (e.g. Ghostty)
+name = "terminal"
+auto_switch = false
+
+[keys]
+# Tmux-like prefix
+prefix = "ctrl+b"
+
+# Agent navigation
+previous_agent = ["prefix+a", "f7"]
+next_agent = "f8"
+
+# Workspaces & Tabs
+switch_workspace = "prefix+1..9"
+switch_tab = "prefix+shift+1..9"
+previous_tab = ["prefix+p", "f9"]
+next_tab = ["prefix+n", "f10"]
+previous_workspace = "f11"
+next_workspace = "f12"
+
+# jeffarese/herdr-bar: Fuzzy-Jump & Command Palette
+[[keys.command]]
+key = "prefix+k"
+type = "plugin_action"
+command = "herdr-bar.open"
+description = "Herdr-Bar Command Palette"
+
+[ui]
+agent_panel_sort = "priority"
+window_title = "herdr · {terminal_title}"
+
+[ui.toast]
+delivery = "herdr"
+
+[ui.sidebar.agents]
+rows = [
+  ["state_icon", "workspace"],
+  ["agent", "terminal_title_stripped"],
+]
+
+[server]
+headless_cols = 160
+headless_rows = 50

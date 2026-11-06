@@ -1,15 +1,53 @@
-font-family = JetBrainsMono Nerd Font
-window-title-font-family = JetBrainsMono Nerd Font
+font-family = "Geist Mono"
+window-title-font-family = "Geist Mono"
 font-size = 14
 
 cursor-style = block
 
-#theme = GitHub Dark
-#theme = Peppermint
-
-#theme = dark:Abernathy,light:Alabaster
-#background = 000000 
-window-titlebar-background = 000000
-window-titlebar-foreground = ffffff
+# Themes (Dark / Light)
+theme = TokyoNight Storm
+background = 1e2231
+#,light:Catppuccin Latte
 window-theme = auto
+
+
+# Tab-Navigation (⌥⌘◀ und ⌥⌘▶)
+keybind = super+alt+left=previous_tab
+keybind = super+alt+right=next_tab
+
 keybind = shift+enter=text:\x1b\r
+
+# Deaktiviert, damit Mac-Sonderzeichen (@, ~, |, \, etc.) mit Option/Alt getippt werden können
+macos-option-as-alt = false
+
+# Beendet Ghostty sauber, sobald das letzte Fenster geschlossen wird
+quit-after-last-window-closed = true
+
+# Mauszeiger beim Tippen ausblenden
+mouse-hide-while-typing = false
+
+# Innenabstand für ein aufgeräumtes Bild
+window-padding-x = 5
+window-padding-y = 5
+window-padding-balance = true
+
+# Integriert die Tableiste nahtlos in macOS (Tabs statt klassischer Titelleiste)
+macos-titlebar-style = tabs
+
+
+# Verhindert nerviges Blinken des Blocks
+cursor-style-blink = true
+
+# Cursor invertiert die Textfarbe darunter für bessere Lesbarkeit
+cursor-invert-fg-bg = true
+
+# Mehr Puffer für lange Terminal-Ausgaben (Standard sind 10.000 Zeilen)
+scrollback-limit = 50000
+
+# Erkennt zsh/bash automatisch
+shell-integration = detect
+shell-integration-features = cursor,sudo,title
+
+# Markiert die aktuelle Zeile bei Klick oder Navigation
+keybind = super+shift+up=jump_to_prompt:-1
+keybind = super+shift+down=jump_to_prompt:1

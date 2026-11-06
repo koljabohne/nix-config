@@ -20,8 +20,11 @@
       "dua-cli"
       "zsh-autosuggestions"
       "mole"
+      "openfortivpn"
       "rclone"
       "zsh-syntax-highlighting"
+      "herdr"
+      "bun"
     ];
 
     casks = [

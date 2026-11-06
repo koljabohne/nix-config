@@ -9,5 +9,6 @@ in
   home.packages = commonPackages ++ (with pkgs; [
     python312
     uv
+    bun
   ]);
 }

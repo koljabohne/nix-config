@@ -219,11 +219,20 @@ activate_home_manager() {
     switch --impure -b "$backup_extension" --flake "${repo_path}#${flake_config}"
 }
 
+install_herdr() {
+  if command -v herdr >/dev/null 2>&1; then
+    return
+  fi
+  log "Installing Herdr"
+  curl -fsSL https://herdr.dev/install.sh | sh
+}
+
 main() {
   install_prerequisites
   validate_repository
   prepare_local_config
   install_nix
+  install_herdr
   activate_home_manager
   log "Ubuntu CLI environment is ready. Start a new login shell."
 }

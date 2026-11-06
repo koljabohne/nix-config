@@ -18,7 +18,6 @@ eval "$(fnm env --use-on-cd --shell zsh)"
 # Path to your omz installation, nix-darwin
 export ZSH="$(readlink -f /etc/static/zsh/omz-script)"
 
-ZSH_THEME="robbyrussell"
 plugins=(
    git
    docker
@@ -26,8 +25,22 @@ plugins=(
 )
 source $ZSH/oh-my-zsh.sh
 
-#############################################
+# Git-Branch blitzschnell ermitteln (nur HEAD lesen, kein zähes git status)
+function git_prompt_branch() {
+  local branch
+  branch=$(command git symbolic-ref --short HEAD 2>/dev/null || command git rev-parse --short HEAD 2>/dev/null)
+  [[ -n "$branch" ]] && echo " %F{242}git:(%F{yellow}${branch}%F{242})%f"
+}
 
+# 2-Zeilen-Prompt mit Transient-Effekt (oberer Teil verschwindet nach Enter)
+TRANSIENT_PROMPT_PROMPT='
+%F{green}%n%f %F{242}@%m%f %F{blue}%~%f$(git_prompt_branch)
+%F{magenta}→%f '
+TRANSIENT_PROMPT_TRANSIENT_PROMPT='%F{magenta}→%f '
+TRANSIENT_PROMPT_TRANSIENT_RPROMPT=''
+PROMPT="$TRANSIENT_PROMPT_PROMPT"
+
+#############################################
 zstyle ':completion:*' menu select
 bindkey '^I' expand-or-complete-prefix
 zstyle ':completion:*' completer _complete _match
@@ -48,6 +61,7 @@ zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
 
 ZINIT_HOME="${XDG_DATA_HOME:-${HOME}/.local/share}/zinit/zinit.git"
 
+
 # Download Zinit, if it's not there yet
 if [ ! -d "$ZINIT_HOME" ]; then
    mkdir -p "$(dirname $ZINIT_HOME)"
@@ -59,6 +73,8 @@ source "${ZINIT_HOME}/zinit.zsh"
 
 # Load autosuggestions immediately (synchronously)
 zinit light zsh-users/zsh-autosuggestions
+
+zinit light olets/zsh-transient-prompt
 
 ### plugins (with turbo mode for speed)
 zinit wait lucid for \
@@ -127,3 +143,12 @@ if [ -z "${CONDA_SHLVL+x}" ] || [ "$CONDA_SHLVL" -eq 0 ]; then
         fi
     done
 fi
+
+# agy Theme automatisch an Tag/Nacht (System-Erscheinungsbild) anpassen
+function agy() {
+  local scheme="solarized light"
+  if [[ "$(defaults read -g AppleInterfaceStyle 2>/dev/null)" == "Dark" ]]; then
+    scheme="tokyo night"
+  fi
+  command agy --settings "{\"colorScheme\": \"$scheme\"}" "$@"
+}

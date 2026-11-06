@@ -66,7 +66,7 @@
 
       userSettings = {
         "update.mode" = "none";
-        "extensions.autoUpdate" = false;
+        "extensions.autoUpdate" = "off";
         "extensions.autoCheckUpdates" = false;
         "terminal.integrated.inheritEnv" = false;
         "terminal.integrated.suggest.enabled" = false;
