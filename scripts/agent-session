@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# agent-session — Autonomous AI coding agent launcher in tmux with A2A mesh networking.
+set -euo pipefail
+
+SESSION_PREFIX="agent"
+
+get_session_name() {
+  local agent="$1"
+  echo "${SESSION_PREFIX}-${agent}"
+}
+
+get_agent_cmd() {
+  local agent="$1"
+  case "$agent" in
+    codex)
+      echo "codex --no-daemon --dangerously-bypass-approvals-and-sandbox"
+      ;;
+    agy)
+      echo "agy --dangerously-skip-permissions"
+      ;;
+    claude)
+      echo "claude --permission-mode auto"
+      ;;
+    kimi)
+      echo "kimi --auto"
+      ;;
+    *)
+      echo "Error: Unknown agent '$agent'. Choose from: codex, agy, claude, kimi" >&2
+      exit 1
+      ;;
+  esac
+}
+
+start_agent() {
+  local agent="$1"
+  local target_dir="${2:-$PWD}"
+  target_dir="$(realpath "$target_dir")"
+  local session
+  session="$(get_session_name "$agent")"
+  local cmd
+  cmd="$(get_agent_cmd "$agent")"
+
+  if tmux has-session -t "$session" 2>/dev/null; then
+    echo "Agent session '$session' is already running."
+    return 0
+  fi
+
+  echo "Starting $agent in tmux session '$session' at $target_dir..."
+  # Start detached session with correct directory and environment
+  tmux new-session -d -s "$session" -c "$target_dir" "$cmd"
+  sleep 2
+
+  if tmux has-session -t "$session" 2>/dev/null; then
+    echo "✓ $agent started successfully in session '$session'."
+    echo "  Attach with: agent-session attach $agent"
+    echo "  Stop with:   agent-session stop $agent"
+  else
+    echo "✗ Failed to start $agent. Check terminal output with: tmux new-session -s $session" >&2
+    exit 1
+  fi
+}
+
+attach_agent() {
+  local agent="$1"
+  local session
+  session="$(get_session_name "$agent")"
+  if ! tmux has-session -t "$session" 2>/dev/null; then
+    echo "Error: Session '$session' is not running. Start it with: agent-session start $agent" >&2
+    exit 1
+  fi
+  tmux attach-session -t "$session"
+}
+
+run_agent() {
+  local agent="$1"
+  local target_dir="${2:-$PWD}"
+  start_agent "$agent" "$target_dir"
+  attach_agent "$agent"
+}
+
+stop_agent() {
+  local agent="$1"
+  if [[ "$agent" == "all" ]]; then
+    for a in codex agy claude kimi; do
+      local s
+      s="$(get_session_name "$a")"
+      if tmux has-session -t "$s" 2>/dev/null; then
+        echo "Stopping $s..."
+        tmux kill-session -t "$s"
+      fi
+    done
+    echo "All agent sessions stopped."
+    return 0
+  fi
+
+  local session
+  session="$(get_session_name "$agent")"
+  if tmux has-session -t "$session" 2>/dev/null; then
+    echo "Stopping session '$session'..."
+    tmux kill-session -t "$session"
+    echo "✓ Session '$session' stopped."
+  else
+    echo "Session '$session' is not running."
+  fi
+}
+
+show_status() {
+  echo "=== AI Agent Mesh Sessions ==="
+  echo
+  local running=0
+  for a in codex agy claude kimi; do
+    local s
+    s="$(get_session_name "$a")"
+    if tmux has-session -t "$s" 2>/dev/null; then
+      local pane_info
+      pane_info="$(tmux list-panes -t "$s" -F "#{pane_current_path} (pid: #{pane_pid})")"
+      printf "  %-10s \033[32m[RUNNING]\033[0m in session '%s' at %s\n" "$a" "$s" "$pane_info"
+      running=$((running + 1))
+    else
+      printf "  %-10s \033[2m[STOPPED]\033[0m\n" "$a"
+    fi
+  done
+  echo
+  echo "Active mesh peers on local directory:"
+  python3 -c "
+import urllib.request, json
+try:
+    req = urllib.request.urlopen('http://127.0.0.1:7777/agents', timeout=2)
+    peers = json.loads(req.read().decode())
+    for p in peers:
+        url = p.get('url', '')
+        name = 'unknown'
+        desc = ''
+        try:
+            creq = urllib.request.urlopen(f'{url}/.well-known/agent-card.json', timeout=1)
+            card = json.loads(creq.read().decode())
+            name = card.get('name', 'unknown')
+            desc = card.get('description', '')
+        except Exception:
+            pass
+        print(f'  • {name}: {url} ({desc})')
+except Exception as e:
+    print(f'  (directory unreachable: {e})')
+"
+  echo
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  agent-session start <agent> [dir]    Start an agent in a background tmux session
+  agent-session run <agent> [dir]      Start and immediately attach to the agent
+  agent-session attach <agent>         Attach to a running agent session
+  agent-session status                 Show status of all agent sessions & A2A peers
+  agent-session stop <agent|all>       Stop agent session(s)
+
+Supported agents:
+  codex   — OpenAI Codex CLI
+  agy     — Antigravity CLI
+  claude  — Claude Code CLI
+  kimi    — Kimi Code CLI
+
+Examples:
+  agent-session start codex ~/nix
+  agent-session run claude ~/prj
+  agent-session status
+EOF
+}
+
+cmd="${1:-}"
+case "$cmd" in
+  start)
+    [[ $# -ge 2 ]] || { usage; exit 1; }
+    start_agent "$2" "${3:-$PWD}"
+    ;;
+  run)
+    [[ $# -ge 2 ]] || { usage; exit 1; }
+    run_agent "$2" "${3:-$PWD}"
+    ;;
+  attach)
+    [[ $# -ge 2 ]] || { usage; exit 1; }
+    attach_agent "$2"
+    ;;
+  stop)
+    [[ $# -ge 2 ]] || { usage; exit 1; }
+    stop_agent "$2"
+    ;;
+  status)
+    show_status
+    ;;
+  *)
+    usage
+    exit 1
+    ;;
+esac

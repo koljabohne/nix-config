@@ -71,7 +71,7 @@ def get_claude_stats():
         },
         "context_window": {
             "used_pct": ctx.get("used_percentage", 0),
-            "current_tokens": ctx.get("total_input_tokens") or ctx.get("current_usage", {}).get("input_tokens"),
+            "current_tokens": ctx.get("total_input_tokens") or (ctx.get("current_usage") or {}).get("input_tokens"),
             "max_tokens": ctx.get("context_window_size"),
         },
         "cost_usd": cost.get("total_cost_usd"),
