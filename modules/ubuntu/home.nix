@@ -17,6 +17,13 @@
     fi
   '';
 
+  # claude, codex, uv etc. install themselves into ~/.local/bin.
+  # kimi installs itself into ~/.kimi-code/bin.
+  home.sessionPath = [
+    "${hostVars.home}/.local/bin"
+    "${hostVars.home}/.kimi-code/bin"
+  ];
+
   home.sessionVariables = {
     NIX_CONFIG_BRANCH = hostVars.branch;
     NIX_CONFIG_FLAKE = hostVars.configurationName;

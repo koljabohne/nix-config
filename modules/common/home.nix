@@ -1,10 +1,12 @@
 { hostVars, ... }:
 {
   imports = [
+    ./claude.nix
     ./git.nix
     ./dotfiles.nix
     ./shell.nix
     ./skills.nix
+    ./tmux.nix
   ];
 
   home.username = hostVars.user;

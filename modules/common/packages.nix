@@ -8,10 +8,10 @@ with pkgs;
   wget
   tree
   htop
-  tmux
   nmap
   fzf
   dust
+  jq
 
   # Development
   gh
