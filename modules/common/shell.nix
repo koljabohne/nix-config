@@ -7,8 +7,4 @@
     EDITOR = "nvim";
     NIX_CONFIG_REPO = hostVars.repoPath;
   };
-
-  home.sessionPath = [
-    "$HOME/.local/bin"
-  ];
 }

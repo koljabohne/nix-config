@@ -15,6 +15,7 @@ with pkgs;
 
   # Development
   gh
+  tea
   fnm
   nodejs_22
   pnpm

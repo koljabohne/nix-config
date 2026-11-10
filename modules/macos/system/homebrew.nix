@@ -26,6 +26,8 @@
       "herdr"
       "bun"
       "skillshare"
+      "tea"
+      "wireguard-tools"
     ];
 
     casks = [
