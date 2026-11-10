@@ -7,6 +7,7 @@ Features:
 - Intelligent Idle & Cache-Aware Lifecycle Management:
     • claude: Auto-terminates when prompt cache expires (5 min inactivity).
     • codex, agy, kimi: Auto-terminates after 30 min of inactivity (configurable via --ttl).
+    • Quota Auto-Kill: Terminates automatically if 5h or 7d quota drops to 0%.
 - Watchdog daemon runs only while sessions are active and auto-exits when all are stopped.
 """
 
@@ -23,7 +24,6 @@ SESSION_PREFIX = "agent"
 RUN_DIR = f"/run/user/{os.getuid()}/agent-session" if os.path.exists(f"/run/user/{os.getuid()}") else os.path.expanduser("~/.cache/agent-session")
 os.makedirs(RUN_DIR, exist_ok=True)
 
-# Default policies per agent
 DEFAULT_POLICIES = {
     "claude": {"mode": "cache-expire", "default_ttl_sec": 300},
     "codex": {"mode": "idle", "default_ttl_sec": 1800},
@@ -138,8 +138,66 @@ def get_claude_prompt_cache_status():
         return None
 
 
+def get_agent_quota_stats(agent: str):
+    try:
+        quota_globals = {}
+        quota_script = os.path.expanduser("~/.local/bin/agent-quota")
+        if not os.path.exists(quota_script):
+            quota_script = "/home/ctn_admin/nix/scripts/agent-quota"
+        with open(quota_script) as f:
+            exec(f.read(), quota_globals)
+
+        if agent == "codex":
+            return quota_globals.get("get_codex_stats", lambda: None)()
+        elif agent == "claude":
+            return quota_globals.get("get_claude_stats", lambda: None)()
+        elif agent == "agy":
+            return quota_globals.get("get_agy_stats", lambda: None)()
+        elif agent == "kimi":
+            return quota_globals.get("get_kimi_stats", lambda: None)()
+    except Exception:
+        pass
+    return None
+
+
+def check_agent_quota_exhausted(agent: str):
+    """Checks if agent's 5h or 7d remaining quota has reached 0%."""
+    stats = get_agent_quota_stats(agent)
+    if not stats:
+        return False, "", None
+
+    q = stats.get("quota", {})
+    if not q:
+        return False, "", stats
+
+    # 5-hour window
+    five_rem = q.get("five_hour_remaining_pct")
+    if five_rem is not None and five_rem <= 0:
+        resets = q.get("five_hour_resets_in", "unknown")
+        return True, f"5h quota exhausted (0% remaining, resets in {resets})", stats
+
+    five_used = q.get("five_hour_used_pct")
+    if five_used is not None and five_used >= 100:
+        resets = q.get("five_hour_resets_in", "unknown")
+        return True, f"5h quota exhausted (100% used, resets in {resets})", stats
+
+    # 7-day / weekly window
+    seven_rem = q.get("seven_day_remaining_pct")
+    if seven_rem is None:
+        seven_rem = q.get("weekly_remaining_pct")
+    if seven_rem is not None and seven_rem <= 0:
+        resets = q.get("seven_day_resets_in", "unknown")
+        return True, f"Weekly/7d quota exhausted (0% remaining, resets in {resets})", stats
+
+    seven_used = q.get("seven_day_used_pct")
+    if seven_used is not None and seven_used >= 100:
+        resets = q.get("seven_day_resets_in", "unknown")
+        return True, f"Weekly/7d quota exhausted (100% used, resets in {resets})", stats
+
+    return False, "", stats
+
+
 def is_agent_a2a_working(agent: str) -> bool:
-    # Query directory peers to see if agent is currently busy on an active task
     try:
         req = urllib.request.urlopen("http://127.0.0.1:7777/agents", timeout=1)
         peers = json.loads(req.read().decode())
@@ -150,7 +208,6 @@ def is_agent_a2a_working(agent: str) -> bool:
                 card = json.loads(creq.read().decode())
                 name = card.get("name", "")
                 if agent in name:
-                    # check tasks if available
                     treq = urllib.request.urlopen(f"{url}/tasks", timeout=0.5)
                     tasks = json.loads(treq.read().decode())
                     for t in tasks:
@@ -186,7 +243,19 @@ def run_watchdog_check():
         mode = meta.get("mode", DEFAULT_POLICIES[agent]["mode"])
         ttl_sec = meta.get("ttl_sec", DEFAULT_POLICIES[agent]["default_ttl_sec"])
 
-        # Never kill if explicitly requested
+        # 1. QUOTA CHECK: If 5h or 7d usage reached limit (0% remaining), kill immediately!
+        exhausted, quota_reason, _ = check_agent_quota_exhausted(agent)
+        if exhausted:
+            print(f"[Watchdog] Auto-terminating session '{sname}': {quota_reason}", flush=True)
+            subprocess.run(["tmux", "kill-session", "-t", sname], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if os.path.exists(meta_file):
+                try:
+                    os.remove(meta_file)
+                except Exception:
+                    pass
+            continue
+
+        # If ttl is disabled, skip idle checks
         if ttl_sec == -1:
             continue
 
@@ -200,21 +269,19 @@ def run_watchdog_check():
         should_kill = False
         kill_reason = ""
 
+        # 2. CACHE-EXPIRE OR IDLE CHECK
         if mode == "cache-expire" and agent == "claude":
             cinfo = get_claude_prompt_cache_status()
             if cinfo:
                 if not cinfo.get("warm") or (cinfo.get("remaining_sec") is not None and cinfo["remaining_sec"] <= 0):
-                    # Prompt cache expired and idle > 30s
                     if idle_sec >= 30:
                         should_kill = True
                         kill_reason = f"Prompt cache expired (warm=False, idle={format_duration(idle_sec)})"
             else:
-                # Fallback to standard 5-minute TTL if no quota cache
                 if idle_sec >= ttl_sec:
                     should_kill = True
                     kill_reason = f"Prompt cache timeout reached ({format_duration(idle_sec)} idle)"
         else:
-            # Idle timeout mode
             if idle_sec >= ttl_sec:
                 should_kill = True
                 kill_reason = f"Idle timeout of {format_duration(ttl_sec)} reached ({format_duration(idle_sec)} idle)"
@@ -237,13 +304,11 @@ def start_watchdog_daemon():
         try:
             with open(pid_file) as f:
                 pid = int(f.read().strip())
-            # Check if running
             os.kill(pid, 0)
-            return  # Already running
+            return
         except Exception:
             pass
 
-    # Spawn detached background loop
     script = os.path.abspath(__file__)
     cmd = [sys.executable, script, "_watchdog_loop"]
     p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
@@ -260,7 +325,6 @@ def watchdog_loop():
         try:
             active_count = run_watchdog_check()
             if active_count == 0:
-                # No sessions running anywhere; exit cleanly
                 break
         except Exception:
             pass
@@ -286,6 +350,14 @@ def cmd_start(args):
     if has_tmux_session(sname):
         print(f"Agent session '{sname}' is already running.")
         return
+
+    # Check quota before launching
+    if not getattr(args, "force", False):
+        exhausted, reason, _ = check_agent_quota_exhausted(agent)
+        if exhausted:
+            print(f"✗ Cannot start {agent}: {reason}.", file=sys.stderr)
+            print("  Use --force to start anyway.", file=sys.stderr)
+            sys.exit(1)
 
     cmd = COMMANDS[agent]
     mode = DEFAULT_POLICIES[agent]["mode"]
@@ -319,7 +391,7 @@ def cmd_start(args):
 
         ttl_desc = "auto-stop on cache expire" if mode == "cache-expire" else f"auto-stop after {format_duration(ttl_sec)} idle"
         print(f"✓ {agent} started successfully in session '{sname}'.")
-        print(f"  Lifecycle:   {ttl_desc}")
+        print(f"  Lifecycle:   {ttl_desc} · auto-stop on 0% quota")
         print(f"  Attach with: agent-session attach {agent}")
         print(f"  Stop with:   agent-session stop {agent}")
     else:
@@ -390,6 +462,24 @@ def cmd_status(args):
             last_act = get_last_activity(a)
             idle_sec = max(0, int(now - last_act))
 
+            # Quota stats
+            stats = get_agent_quota_stats(a)
+            quota_parts = []
+            if stats and "quota" in stats:
+                q = stats["quota"]
+                f_rem = q.get("five_hour_remaining_pct")
+                if f_rem is not None:
+                    c_color = "\033[31m" if f_rem <= 10 else "\033[32m"
+                    quota_parts.append(f"5h: {c_color}{f_rem}%\033[0m")
+                s_rem = q.get("seven_day_remaining_pct")
+                if s_rem is None:
+                    s_rem = q.get("weekly_remaining_pct")
+                if s_rem is not None:
+                    w_color = "\033[31m" if s_rem <= 10 else "\033[32m"
+                    quota_parts.append(f"7d: {w_color}{s_rem}%\033[0m")
+
+            quota_desc = f" · quota: [{', '.join(quota_parts)}]" if quota_parts else ""
+
             lifecycle_str = ""
             if mode == "cache-expire" and a == "claude":
                 cinfo = get_claude_prompt_cache_status()
@@ -406,7 +496,7 @@ def cmd_status(args):
 
             print(f"  \033[1m{a:<10}\033[0m \033[32m[RUNNING]\033[0m in session '{sname}' (pid: {pid})")
             print(f"             cwd: {cwd}")
-            print(f"             policy: {lifecycle_str}")
+            print(f"             policy: {lifecycle_str}{quota_desc}")
         else:
             print(f"  \033[1m{a:<10}\033[0m \033[2m[STOPPED]\033[0m")
 
@@ -443,12 +533,14 @@ def main():
     p_start.add_argument("agent", choices=list(COMMANDS.keys()))
     p_start.add_argument("dir", nargs="?", default=None, help="Working directory (default: current)")
     p_start.add_argument("--ttl", help="Auto-kill timeout (e.g. 15m, 1h, cache, never). Defaults: claude=cache, others=30m")
+    p_start.add_argument("--force", action="store_true", help="Start even if quota is exhausted (0%)")
 
     # run
     p_run = subparsers.add_parser("run", help="Start and immediately attach to the agent")
     p_run.add_argument("agent", choices=list(COMMANDS.keys()))
     p_run.add_argument("dir", nargs="?", default=None)
     p_run.add_argument("--ttl", help="Auto-kill timeout")
+    p_run.add_argument("--force", action="store_true", help="Start even if quota is exhausted (0%)")
 
     # attach
     p_attach = subparsers.add_parser("attach", help="Attach to a running agent session")
