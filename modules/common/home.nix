@@ -1,6 +1,7 @@
 { hostVars, ... }:
 {
   imports = [
+    ./agy.nix
     ./claude.nix
     ./git.nix
     ./dotfiles.nix
