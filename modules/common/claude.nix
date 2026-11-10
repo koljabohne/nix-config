@@ -16,6 +16,7 @@ let
       A2A_DIRECTORY = "http://127.0.0.1:7777";
       A2A_BIND = "127.0.0.1:0";
       A2A_ADVERTISE_HOST = "127.0.0.1";
+      A2A_NUDGE = "auto";
     };
   };
 
