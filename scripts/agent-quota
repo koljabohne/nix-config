@@ -140,21 +140,26 @@ def get_codex_stats():
     if not files:
         return { "agent": "codex", "model": model }
 
-    latest_file = max(files, key=os.path.getmtime)
+    # Sort files by modification time, newest first
+    files.sort(key=os.path.getmtime, reverse=True)
     latest_token_event = None
 
-    try:
-        with open(latest_file, "r", errors="ignore") as f:
-            for line in f:
-                if '"token_count"' in line:
-                    try:
-                        data = json.loads(line)
-                        if data.get("type") == "event_msg" and data.get("payload", {}).get("type") == "token_count":
-                            latest_token_event = data["payload"]
-                    except Exception:
-                        pass
-    except Exception:
-        pass
+    # Search through recent sessions for the newest token_count event
+    for fpath in files[:25]:
+        try:
+            with open(fpath, "r", errors="ignore") as f:
+                for line in f:
+                    if '"token_count"' in line:
+                        try:
+                            data = json.loads(line)
+                            if data.get("type") == "event_msg" and data.get("payload", {}).get("type") == "token_count":
+                                latest_token_event = data["payload"]
+                        except Exception:
+                            pass
+            if latest_token_event:
+                break
+        except Exception:
+            continue
 
     if not latest_token_event:
         return { "agent": "codex", "model": model }
@@ -168,10 +173,14 @@ def get_codex_stats():
     prim_used = prim.get("used_percent")
     prim_reset = prim.get("resets_at")
     prim_rem_sec = max(0, int(prim_reset - time.time())) if prim_reset else None
+    if prim_rem_sec == 0 and prim_reset and prim_reset < time.time():
+        prim_used = 0.0
 
     sec_used = sec.get("used_percent")
     sec_reset = sec.get("resets_at")
     sec_rem_sec = max(0, int(sec_reset - time.time())) if sec_reset else None
+    if sec_rem_sec == 0 and sec_reset and sec_reset < time.time():
+        sec_used = 0.0
 
     cached_tokens = usage.get("cached_input_tokens", 0)
 
