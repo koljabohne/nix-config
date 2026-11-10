@@ -1,6 +1,7 @@
 { hostVars, ... }:
 {
   imports = [
+    ./a2abridge.nix
     ./agy.nix
     ./claude.nix
     ./git.nix
@@ -11,6 +12,15 @@
 
   home.username = hostVars.user;
   home.homeDirectory = hostVars.home;
+
+  home.sessionPath = [
+    "${hostVars.home}/.local/bin"
+  ];
+
+  home.file.".local/bin/agent-quota" = {
+    source = ../../scripts/agent-quota;
+    executable = true;
+  };
 
   home.stateVersion = "24.05";
 

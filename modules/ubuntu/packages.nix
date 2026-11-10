@@ -33,5 +33,6 @@ in
     python312
     uv
     bun
+    bubblewrap
   ]);
 }

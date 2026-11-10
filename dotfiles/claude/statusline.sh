@@ -4,6 +4,11 @@
 export LC_NUMERIC=C  # decimal point, independent of the user's locale
 input=$(cat)
 
+# Cache latest quota and cache telemetry for agent access
+if [ -n "$input" ] && [ "$input" != "{}" ]; then
+    printf '%s\n' "$input" > "$HOME/.claude/quota_cache.json" 2>/dev/null || true
+fi
+
 format_tokens() {
     local t=$1
     if [ -z "$t" ] || [ "$t" -le 0 ]; then

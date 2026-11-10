@@ -1,0 +1,398 @@
+#!/usr/bin/env python3
+"""
+agent-quota — Real-time quota, rate limits, and prompt cache telemetry for AI coding agents.
+Supports both interactive terminal output and standard MCP stdio protocol.
+"""
+
+import sys
+import os
+import glob
+import json
+import time
+
+def format_tokens(t):
+    if not t or t <= 0:
+        return "0"
+    if t >= 1_000_000:
+        m = t / 1_000_000
+        return f"{m:.1f}M" if m < 10 else f"{int(m)}M"
+    if t >= 1000:
+        return f"{int(t / 1000)}k"
+    return str(t)
+
+def format_duration(sec):
+    if sec is None or sec < 0:
+        return "unknown"
+    h = sec // 3600
+    m = (sec % 3600) // 60
+    if h > 0:
+        return f"{h}h {m}m" if m > 0 else f"{h}h"
+    return f"{m}m"
+
+def get_claude_stats():
+    path = os.path.expanduser("~/.claude/quota_cache.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except Exception:
+        return None
+
+    rl = data.get("rate_limits", {})
+    five = rl.get("five_hour", {})
+    seven = rl.get("seven_day", {})
+    ctx = data.get("context_window", {})
+    cache = data.get("prompt_cache", {})
+    cost = data.get("cost", {})
+
+    five_used = five.get("used_percentage")
+    five_resets_at = five.get("resets_at")
+    five_rem_sec = max(0, int(five_resets_at - time.time())) if five_resets_at else None
+    seven_used = seven.get("used_percentage")
+
+    expires_at = cache.get("expires_at")
+    cache_exp_sec = max(0, int(expires_at - time.time())) if expires_at else None
+
+    return {
+        "agent": "claude",
+        "model": data.get("model", {}).get("display_name", "unknown"),
+        "quota": {
+            "five_hour_used_pct": round(five_used, 1) if five_used is not None else None,
+            "five_hour_remaining_pct": round(100 - five_used, 1) if five_used is not None else None,
+            "five_hour_resets_in": format_duration(five_rem_sec) if five_rem_sec is not None else None,
+            "seven_day_used_pct": round(seven_used, 1) if seven_used is not None else None,
+            "seven_day_remaining_pct": round(100 - seven_used, 1) if seven_used is not None else None,
+        },
+        "prompt_cache": {
+            "warm": cache.get("warm", False),
+            "expires_in_minutes": round(cache_exp_sec / 60) if cache_exp_sec is not None else None,
+            "ttl": cache.get("ttl"),
+        },
+        "context_window": {
+            "used_pct": ctx.get("used_percentage", 0),
+            "current_tokens": ctx.get("total_input_tokens") or ctx.get("current_usage", {}).get("input_tokens"),
+            "max_tokens": ctx.get("context_window_size"),
+        },
+        "cost_usd": cost.get("total_cost_usd"),
+    }
+
+def get_agy_stats():
+    path = os.path.expanduser("~/.gemini/antigravity-cli/quota_cache.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except Exception:
+        return None
+
+    quota = data.get("quota", {})
+    g5h = quota.get("gemini-5h", {})
+    gweek = quota.get("gemini-weekly", {})
+    ctx = data.get("context_window", {})
+    current_usage = ctx.get("current_usage", {})
+
+    five_rem = g5h.get("remaining_fraction")
+    five_rem_pct = round(five_rem * 100, 1) if five_rem is not None else None
+    five_sec = g5h.get("reset_in_seconds")
+
+    week_rem = gweek.get("remaining_fraction")
+    week_rem_pct = round(week_rem * 100, 1) if week_rem is not None else None
+
+    return {
+        "agent": "antigravity",
+        "model": data.get("model", {}).get("display_name") or data.get("model", {}).get("id", "unknown"),
+        "quota": {
+            "five_hour_remaining_pct": five_rem_pct,
+            "five_hour_resets_in": format_duration(int(five_sec)) if five_sec is not None else None,
+            "weekly_remaining_pct": week_rem_pct,
+        },
+        "prompt_cache": {
+            "cached_tokens": current_usage.get("cache_read_input_tokens", 0),
+            "warm": bool(current_usage.get("cache_read_input_tokens", 0) > 0),
+        },
+        "context_window": {
+            "used_pct": round(float(ctx.get("used_percentage", 0)), 1),
+            "current_tokens": ctx.get("total_input_tokens") or current_usage.get("input_tokens"),
+            "max_tokens": ctx.get("context_window_size"),
+        },
+    }
+
+def get_codex_stats():
+    session_dir = os.path.expanduser("~/.codex/sessions")
+    model = "gpt-6.1-sol"
+    cfg_path = os.path.expanduser("~/.codex/config.toml")
+    if os.path.exists(cfg_path):
+        try:
+            with open(cfg_path) as f:
+                for line in f:
+                    if line.strip().startswith("model ="):
+                        model = line.split("=")[1].strip().strip('"\'')
+                        break
+        except Exception:
+            pass
+
+    if not os.path.exists(session_dir):
+        return { "agent": "codex", "model": model }
+
+    files = glob.glob(f"{session_dir}/**/rollout-*.jsonl", recursive=True)
+    if not files:
+        return { "agent": "codex", "model": model }
+
+    latest_file = max(files, key=os.path.getmtime)
+    latest_token_event = None
+
+    try:
+        with open(latest_file, "r", errors="ignore") as f:
+            for line in f:
+                if '"token_count"' in line:
+                    try:
+                        data = json.loads(line)
+                        if data.get("type") == "event_msg" and data.get("payload", {}).get("type") == "token_count":
+                            latest_token_event = data["payload"]
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    if not latest_token_event:
+        return { "agent": "codex", "model": model }
+
+    rl = latest_token_event.get("rate_limits", {})
+    prim = rl.get("primary", {})
+    sec = rl.get("secondary", {})
+    info = latest_token_event.get("info", {})
+    usage = info.get("total_token_usage", {})
+
+    prim_used = prim.get("used_percent")
+    prim_reset = prim.get("resets_at")
+    prim_rem_sec = max(0, int(prim_reset - time.time())) if prim_reset else None
+
+    sec_used = sec.get("used_percent")
+    sec_reset = sec.get("resets_at")
+    sec_rem_sec = max(0, int(sec_reset - time.time())) if sec_reset else None
+
+    cached_tokens = usage.get("cached_input_tokens", 0)
+
+    return {
+        "agent": "codex",
+        "model": model,
+        "plan_type": rl.get("plan_type", "team"),
+        "quota": {
+            "five_hour_used_pct": round(prim_used, 1) if prim_used is not None else None,
+            "five_hour_remaining_pct": round(100 - prim_used, 1) if prim_used is not None else None,
+            "five_hour_resets_in": format_duration(prim_rem_sec) if prim_rem_sec is not None else None,
+            "seven_day_used_pct": round(sec_used, 1) if sec_used is not None else None,
+            "seven_day_remaining_pct": round(100 - sec_used, 1) if sec_used is not None else None,
+            "seven_day_resets_in": format_duration(sec_rem_sec) if sec_rem_sec is not None else None,
+        },
+        "prompt_cache": {
+            "cached_tokens": cached_tokens,
+            "warm": bool(cached_tokens > 0),
+        },
+        "context_window": {
+            "max_tokens": info.get("model_context_window", 475000),
+            "total_tokens": usage.get("total_tokens", 0),
+        },
+    }
+
+def collect_all_stats(filter_agent=None):
+    stats = {}
+    if not filter_agent or filter_agent in ("all", "claude"):
+        stats["claude"] = get_claude_stats()
+    if not filter_agent or filter_agent in ("all", "antigravity", "agy"):
+        stats["antigravity"] = get_agy_stats()
+    if not filter_agent or filter_agent in ("all", "codex"):
+        stats["codex"] = get_codex_stats()
+    return stats
+
+def print_cli_output():
+    stats = collect_all_stats()
+    print("\033[1;36m=== Agent Quota & Prompt-Cache Monitor ===\033[0m\n")
+
+    # Claude
+    claude = stats.get("claude")
+    print("\033[1;35m[ Claude Code ]\033[0m")
+    if claude:
+        q = claude["quota"]
+        c = claude["prompt_cache"]
+        ctx = claude["context_window"]
+        rem5 = q.get("five_hour_remaining_pct")
+        rem7 = q.get("seven_day_remaining_pct")
+        res5 = q.get("five_hour_resets_in") or "n/a"
+
+        color5 = "\033[32m" if rem5 and rem5 > 30 else ("\033[33m" if rem5 and rem5 > 15 else "\033[31m")
+        print(f"  5h Limit:       {color5}{rem5}% remaining\033[0m (resets in {res5})")
+        print(f"  7d Limit:       {rem7}% remaining")
+        warm_str = "\033[32mWARM\033[0m" if c.get("warm") else "\033[2mCOLD\033[0m"
+        exp_str = f" (expires in {c.get('expires_in_minutes')}m)" if c.get("expires_in_minutes") is not None else ""
+        print(f"  Prompt Cache:   {warm_str}{exp_str}")
+        pct = ctx.get('used_pct', 0)
+        pct_str = f"{float(pct):.1f}%" if pct is not None else "0%"
+        print(f"  Context Window: {pct_str} ({format_tokens(ctx.get('current_tokens'))} / {format_tokens(ctx.get('max_tokens'))})")
+        if claude.get("cost_usd"):
+            print(f"  Session Cost:   ${claude['cost_usd']:.2f}")
+    else:
+        print("  \033[2mNo active session telemetry found (~/.claude/quota_cache.json)\033[0m")
+    print()
+
+    # Antigravity
+    agy = stats.get("antigravity")
+    print("\033[1;34m[ Antigravity (AGY) ]\033[0m")
+    if agy:
+        q = agy["quota"]
+        c = agy["prompt_cache"]
+        ctx = agy["context_window"]
+        rem5 = q.get("five_hour_remaining_pct")
+        res5 = q.get("five_hour_resets_in") or "n/a"
+        remw = q.get("weekly_remaining_pct")
+
+        color5 = "\033[32m" if rem5 and rem5 > 30 else ("\033[33m" if rem5 and rem5 > 15 else "\033[31m")
+        print(f"  5h Limit:       {color5}{rem5}% remaining\033[0m (resets in {res5})")
+        print(f"  Weekly Limit:   {remw}% remaining")
+        cached = c.get("cached_tokens", 0)
+        print(f"  Cached Tokens:  {format_tokens(cached)}")
+        pct = ctx.get('used_pct', 0)
+        pct_str = f"{float(pct):.1f}%" if pct is not None else "0%"
+        print(f"  Context Window: {pct_str} ({format_tokens(ctx.get('current_tokens'))} / {format_tokens(ctx.get('max_tokens'))})")
+    else:
+        print("  \033[2mNo active session telemetry found (~/.gemini/antigravity-cli/quota_cache.json)\033[0m")
+    print()
+
+    # Codex
+    codex = stats.get("codex")
+    print("\033[1;32m[ OpenAI Codex ]\033[0m")
+    if codex:
+        print(f"  Active Model:   {codex.get('model')} (plan: {codex.get('plan_type', 'team')})")
+        q = codex.get("quota")
+        if q:
+            rem5 = q.get("five_hour_remaining_pct")
+            res5 = q.get("five_hour_resets_in") or "n/a"
+            rem7 = q.get("seven_day_remaining_pct")
+            res7 = q.get("seven_day_resets_in") or "n/a"
+            color5 = "\033[32m" if rem5 and rem5 > 30 else ("\033[33m" if rem5 and rem5 > 15 else "\033[31m")
+            print(f"  5h Limit:       {color5}{rem5}% remaining\033[0m (resets in {res5})")
+            print(f"  7d Limit:       {rem7}% remaining (resets in {res7})")
+            c = codex.get("prompt_cache", {})
+            cached = c.get("cached_tokens", 0)
+            warm_str = "\033[32mWARM\033[0m" if c.get("warm") else "\033[2mCOLD\033[0m"
+            print(f"  Prompt Cache:   {warm_str} ({format_tokens(cached)} cached)")
+            ctx = codex.get("context_window", {})
+            print(f"  Max Context:    {format_tokens(ctx.get('max_tokens'))}")
+        else:
+            print(f"  Status:         A2A-ready (delegation supported)")
+    print()
+
+def run_mcp_server():
+    """Standard Model Context Protocol (MCP) stdio server over JSON-RPC 2.0."""
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            req = json.loads(line)
+        except Exception:
+            continue
+
+        req_id = req.get("id")
+        method = req.get("method")
+
+        # 1. Initialize
+        if method == "initialize":
+            res = {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": { "tools": {} },
+                    "serverInfo": {
+                        "name": "agent-quota",
+                        "version": "1.0.0"
+                    }
+                }
+            }
+            sys.stdout.write(json.dumps(res) + "\n")
+            sys.stdout.flush()
+
+        # 2. Initialized notification
+        elif method == "notifications/initialized":
+            continue
+
+        # 3. Ping
+        elif method == "ping":
+            res = { "jsonrpc": "2.0", "id": req_id, "result": {} }
+            sys.stdout.write(json.dumps(res) + "\n")
+            sys.stdout.flush()
+
+        # 4. Tools list
+        elif method == "tools/list":
+            tools = [
+                {
+                    "name": "get_quota",
+                    "description": "Get real-time rate limits, quota volume, and prompt cache status for Claude Code, Antigravity, and Codex. Use this before running heavy refactorings or test suites to prevent unexpected rate-limit exhaustion, or to decide whether to delegate work via A2A.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "agent": {
+                                "type": "string",
+                                "description": "Filter by agent ('all', 'claude', 'antigravity', or 'codex')",
+                                "enum": ["all", "claude", "antigravity", "codex"]
+                            }
+                        },
+                        "required": []
+                    }
+                }
+            ]
+            res = {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": { "tools": tools }
+            }
+            sys.stdout.write(json.dumps(res) + "\n")
+            sys.stdout.flush()
+
+        # 5. Tools call
+        elif method == "tools/call":
+            params = req.get("params", {})
+            name = params.get("name")
+            args = params.get("arguments", {})
+
+            if name == "get_quota":
+                agent_filter = args.get("agent", "all")
+                data = collect_all_stats(agent_filter)
+                res = {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json.dumps(data, indent=2)
+                            }
+                        ]
+                    }
+                }
+            else:
+                res = {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {
+                        "code": -32601,
+                        "message": f"Method not found: {name}"
+                    }
+                }
+            sys.stdout.write(json.dumps(res) + "\n")
+            sys.stdout.flush()
+
+def main():
+    if "--mcp" in sys.argv:
+        run_mcp_server()
+    elif not sys.stdin.isatty() and not any(arg in sys.argv for arg in ("--cli", "-h", "--help")):
+        # Check if stdin has JSON-RPC
+        run_mcp_server()
+    else:
+        print_cli_output()
+
+if __name__ == "__main__":
+    main()
