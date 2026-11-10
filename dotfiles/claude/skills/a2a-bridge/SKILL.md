@@ -14,6 +14,16 @@ You are part of a distributed team of AI coding agents. Other Claude / Codex / C
 - Discovery is local: `a2a_list_agents` returns every peer registered with the directory.
 - Every message is its own task: `a2a_send_message` creates a task on the peer, which stays working until the peer answers with `a2a_complete_task`. Continue a conversation with a new message that reuses the `context_id` of the previous task. Pass `task_id` only for a task that is waiting for input — A2A 1.0 rejects messages to a task that is still being worked on or already finished.
 - Your incoming queue is `a2a_inbox`. Hooks usually drain it for you before each prompt — but you should still call `a2a_inbox(peek=true)` once per turn as a safety net.
+- Use `get_quota()` to check remaining 5h/7d rate limits and prompt-cache status across Claude, Antigravity, and Codex.
+
+## Quota-Aware Delegation
+
+Before accepting heavy or repetitive tasks (large test suites, multi-file refactorings, wide codebase searches):
+1. Check your quota via `get_quota()`.
+2. If your own 5h remaining limit is low (< 20%) or prompt cache is cold, check peer capacity in the response:
+   - **Antigravity (AGY)** runs on Google Gemini (1M context) on its own separate quota.
+   - **Codex** runs on OpenAI on its own separate quota.
+3. Delegate heavy subtasks to healthy peers via `a2a_send_message(peer_url=..., text=...)` to preserve your budget and prevent turn aborts.
 
 ## Self-label
 
