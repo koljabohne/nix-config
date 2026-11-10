@@ -197,6 +197,71 @@ def get_codex_stats():
         },
     }
 
+def get_kimi_stats():
+    config_path = os.path.expanduser("~/.kimi-code/config.toml")
+    model = "anthropic/claude-sonnet-5-5"
+    provider = "anthropic"
+    if os.path.exists(config_path):
+        try:
+            with open(config_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("default_model ="):
+                        model = line.split("=")[1].strip().strip('"\'')
+                    elif line.startswith("type =") and provider == "anthropic":
+                        provider = line.split("=")[1].strip().strip('"\'')
+        except Exception:
+            pass
+
+    session_dir = os.path.expanduser("~/.kimi-code/sessions")
+    if not os.path.exists(session_dir):
+        return { "agent": "kimi", "model": model, "provider": provider, "billing": "direct_api" }
+
+    files = glob.glob(f"{session_dir}/**/wire.jsonl", recursive=True)
+    if not files:
+        return { "agent": "kimi", "model": model, "provider": provider, "billing": "direct_api" }
+
+    latest_file = max(files, key=os.path.getmtime)
+    latest_usage = None
+    try:
+        with open(latest_file, "r", errors="ignore") as f:
+            for line in f:
+                if '"type":"usage.record"' in line or '"type": "usage.record"' in line:
+                    try:
+                        record = json.loads(line)
+                        if record.get("type") == "usage.record":
+                            latest_usage = record
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    if not latest_usage:
+        return { "agent": "kimi", "model": model, "provider": provider, "billing": "direct_api" }
+
+    u = latest_usage.get("usage", {})
+    cache_read = u.get("inputCacheRead", 0)
+    cache_creation = u.get("inputCacheCreation", 0)
+    input_other = u.get("inputOther", 0)
+    output = u.get("output", 0)
+
+    return {
+        "agent": "kimi",
+        "model": latest_usage.get("model", model),
+        "provider": provider,
+        "billing": "direct_api (no rolling subscription window)",
+        "prompt_cache": {
+            "cached_tokens": cache_read,
+            "created_tokens": cache_creation,
+            "warm": bool(cache_read > 0),
+        },
+        "last_turn": {
+            "input_tokens": input_other,
+            "output_tokens": output,
+            "cached_tokens": cache_read,
+        },
+    }
+
 def collect_all_stats(filter_agent=None):
     stats = {}
     if not filter_agent or filter_agent in ("all", "claude"):
@@ -205,6 +270,8 @@ def collect_all_stats(filter_agent=None):
         stats["antigravity"] = get_agy_stats()
     if not filter_agent or filter_agent in ("all", "codex"):
         stats["codex"] = get_codex_stats()
+    if not filter_agent or filter_agent in ("all", "kimi"):
+        stats["kimi"] = get_kimi_stats()
     return stats
 
 def print_cli_output():
@@ -284,6 +351,26 @@ def print_cli_output():
             print(f"  Status:         A2A-ready (delegation supported)")
     print()
 
+    # Kimi Code
+    kimi = stats.get("kimi")
+    print("\033[1;33m[ Kimi Code ]\033[0m")
+    if kimi:
+        m = kimi.get("model", "unknown")
+        b = kimi.get("billing", "direct_api")
+        print(f"  Model:          {m}")
+        print(f"  Billing:        {b}")
+        c = kimi.get("prompt_cache", {})
+        warm_str = "\033[32mWARM\033[0m" if c.get("warm") else "\033[2mCOLD\033[0m"
+        print(f"  Prompt Cache:   {warm_str} ({format_tokens(c.get('cached_tokens', 0))} cached)")
+        lt = kimi.get("last_turn")
+        if lt:
+            print(f"  Last Turn:      {format_tokens(lt.get('input_tokens', 0))} in / {format_tokens(lt.get('output_tokens', 0))} out")
+        else:
+            print(f"  Status:         A2A-ready (delegation supported)")
+    else:
+        print("  \033[2mNo active session telemetry found (~/.kimi-code/sessions)\033[0m")
+    print()
+
 def run_mcp_server():
     """Standard Model Context Protocol (MCP) stdio server over JSON-RPC 2.0."""
     for line in sys.stdin:
@@ -330,14 +417,14 @@ def run_mcp_server():
             tools = [
                 {
                     "name": "get_quota",
-                    "description": "Get real-time rate limits, quota volume, and prompt cache status for Claude Code, Antigravity, and Codex. Use this before running heavy refactorings or test suites to prevent unexpected rate-limit exhaustion, or to decide whether to delegate work via A2A.",
+                    "description": "Get real-time rate limits, quota volume, and prompt cache status for Claude Code, Antigravity, Codex, and Kimi Code. Use this before running heavy refactorings or test suites to prevent unexpected rate-limit exhaustion, or to decide whether to delegate work via A2A.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "agent": {
                                 "type": "string",
-                                "description": "Filter by agent ('all', 'claude', 'antigravity', or 'codex')",
-                                "enum": ["all", "claude", "antigravity", "codex"]
+                                "description": "Filter by agent ('all', 'claude', 'antigravity', 'codex', or 'kimi')",
+                                "enum": ["all", "claude", "antigravity", "codex", "kimi"]
                             }
                         },
                         "required": []

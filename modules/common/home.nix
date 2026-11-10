@@ -5,6 +5,7 @@
     ./agy.nix
     ./claude.nix
     ./git.nix
+    ./kimi.nix
     ./dotfiles.nix
     ./shell.nix
     ./tmux.nix
