@@ -7,7 +7,18 @@ input=$(cat)
 PCT=$(jq -r '.context_window.used_percentage // 0' <<<"$input" | cut -d. -f1)
 MODEL=$(jq -r '.model.display_name // .model.id // "?"' <<<"$input")
 FIVE=$(jq -r '(.quota["gemini-5h"].remaining_fraction // empty) * 100 | round' <<<"$input")
-FIVE_RESET=$(jq -r '((.quota["gemini-5h"].reset_time // empty | fromdateiso8601?) // (if .quota["gemini-5h"].reset_in_seconds then (now + .quota["gemini-5h"].reset_in_seconds) else empty end)) | strflocaltime("%H:%M")' <<<"$input")
+REM_SEC=$(jq -r '(.quota["gemini-5h"].reset_in_seconds // (((.quota["gemini-5h"].reset_time // empty | fromdateiso8601?) - now) | floor) // empty)' <<<"$input")
+FIVE_RESET=""
+if [ -n "$REM_SEC" ]; then
+    [ "$REM_SEC" -lt 0 ] && REM_SEC=0
+    H=$(( REM_SEC / 3600 ))
+    M=$(( (REM_SEC % 3600) / 60 ))
+    if [ "$H" -gt 0 ]; then
+        [ "$M" -gt 0 ] && FIVE_RESET="${H}h ${M}m" || FIVE_RESET="${H}h"
+    else
+        FIVE_RESET="${M}m"
+    fi
+fi
 WEEK=$(jq -r '(.quota["gemini-weekly"].remaining_fraction // empty) * 100 | round' <<<"$input")
 CACHED=$(jq -r '.context_window.current_usage.cache_read_input_tokens // empty' <<<"$input")
 

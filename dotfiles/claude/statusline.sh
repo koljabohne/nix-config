@@ -7,7 +7,19 @@ input=$(cat)
 PCT=$(jq -r '.context_window.used_percentage // 0' <<<"$input" | cut -d. -f1)
 MODEL=$(jq -r '.model.display_name // "?"' <<<"$input")
 FIVE=$(jq -r '.rate_limits.five_hour.used_percentage // empty | 100 - . | round' <<<"$input")
-FIVE_RESET=$(jq -r '(.rate_limits.five_hour.resets_at // empty) | strflocaltime("%H:%M")' <<<"$input")
+FIVE_RESETS_AT=$(jq -r '.rate_limits.five_hour.resets_at // empty' <<<"$input")
+FIVE_RESET=""
+if [ -n "$FIVE_RESETS_AT" ]; then
+    REM_SEC=$(( FIVE_RESETS_AT - $(date +%s) ))
+    [ "$REM_SEC" -lt 0 ] && REM_SEC=0
+    H=$(( REM_SEC / 3600 ))
+    M=$(( (REM_SEC % 3600) / 60 ))
+    if [ "$H" -gt 0 ]; then
+        [ "$M" -gt 0 ] && FIVE_RESET="${H}h ${M}m" || FIVE_RESET="${H}h"
+    else
+        FIVE_RESET="${M}m"
+    fi
+fi
 WEEK=$(jq -r '.rate_limits.seven_day.used_percentage // empty | 100 - . | round' <<<"$input")
 COST=$(jq -r '.cost.total_cost_usd // empty' <<<"$input")
 WARM=$(jq -r '.prompt_cache.warm // false' <<<"$input")
