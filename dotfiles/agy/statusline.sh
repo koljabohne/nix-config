@@ -7,6 +7,7 @@ input=$(cat)
 PCT=$(jq -r '.context_window.used_percentage // 0' <<<"$input" | cut -d. -f1)
 MODEL=$(jq -r '.model.display_name // .model.id // "?"' <<<"$input")
 FIVE=$(jq -r '(.quota["gemini-5h"].remaining_fraction // empty) * 100 | round' <<<"$input")
+FIVE_RESET=$(jq -r '((.quota["gemini-5h"].reset_time // empty | fromdateiso8601?) // (if .quota["gemini-5h"].reset_in_seconds then (now + .quota["gemini-5h"].reset_in_seconds) else empty end)) | strflocaltime("%H:%M")' <<<"$input")
 WEEK=$(jq -r '(.quota["gemini-weekly"].remaining_fraction // empty) * 100 | round' <<<"$input")
 CACHED=$(jq -r '.context_window.current_usage.cache_read_input_tokens // empty' <<<"$input")
 
@@ -25,7 +26,10 @@ OUT+=" | ${CYAN}${MODEL}${RESET}"
 # Rate limits / Quota (Gemini 5h and weekly remaining)
 if [ -n "$FIVE" ] || [ -n "$WEEK" ]; then
     LIMITS=""
-    [ -n "$FIVE" ] && LIMITS+="5h ${FIVE}%"
+    if [ -n "$FIVE" ]; then
+        LIMITS+="5h ${FIVE}%"
+        [ -n "$FIVE_RESET" ] && LIMITS+=" (${FIVE_RESET})"
+    fi
     [ -n "$WEEK" ] && LIMITS+="${LIMITS:+ - }7d ${WEEK}%"
     OUT+=" | ${MAGENTA}${LIMITS}${RESET}"
 fi
