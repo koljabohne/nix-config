@@ -4,3 +4,4 @@
 *.local.nix
 /config.local.toml
 /.claude/
+result

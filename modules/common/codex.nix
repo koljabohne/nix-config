@@ -1,4 +1,5 @@
-# Codex CLI configuration (A2A, quota and delegate MCP, global AGENTS.md, a2a skill), shared by macOS and Ubuntu.
+# Codex CLI configuration (A2A, quota and delegate MCP, global AGENTS.md;
+# skills come from ~/.agents/skills, which codex reads too), shared by macOS and Ubuntu.
 { hostVars, lib, pkgs, ... }:
 
 let
@@ -24,11 +25,6 @@ let
 in
 {
   home.file.".codex/AGENTS.md".source = ../../dotfiles/agents/AGENTS.md;
-
-  home.file.".codex/skills/a2a-bridge" = {
-    source = ../../dotfiles/agents/skills/a2a-bridge;
-    recursive = true;
-  };
 
   home.activation.codexConfig = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
     config="$HOME/.codex/config.toml"

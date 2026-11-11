@@ -9,6 +9,7 @@
     ./kimi.nix
     ./dotfiles.nix
     ./shell.nix
+    ./skills.nix
     ./tmux.nix
   ];
 
