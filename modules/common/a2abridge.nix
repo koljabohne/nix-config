@@ -75,9 +75,9 @@ ${sha256Cases}      esac
         echo "a2abridge: no pinned checksum for ''${os}_''${arch}, skipping install" >&2
       elif ! ${pkgs.curl}/bin/curl -fsSL "$url" -o "$tmpdir/$tarball"; then
         echo "a2abridge: download failed from $url" >&2
-      elif [ "$(${pkgs.coreutils}/bin/sha256sum "$tmpdir/$tarball" | cut -d' ' -f1)" != "$expected" ]; then
+      elif [ "$(${pkgs.coreutils}/bin/sha256sum "$tmpdir/$tarball" | ${pkgs.coreutils}/bin/cut -d' ' -f1)" != "$expected" ]; then
         echo "a2abridge: checksum mismatch for $tarball, not installing" >&2
-      elif tar -xzf "$tmpdir/$tarball" -C "$tmpdir"; then
+      elif PATH="${pkgs.gzip}/bin:$PATH" ${pkgs.gnutar}/bin/tar -xzf "$tmpdir/$tarball" -C "$tmpdir"; then
         $DRY_RUN_CMD mv "$tmpdir/a2abridge" "${a2aBin}"
         $DRY_RUN_CMD chmod +x "${a2aBin}"
         echo "✓ a2abridge v${version} installed to ${a2aBin}"
