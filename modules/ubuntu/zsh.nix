@@ -70,7 +70,9 @@
     shellAliases = {
       vi = "nvim";
       ls = "ls --color=auto";
-      nix-reb = "home-manager switch --impure --flake ${hostVars.repoPath}#${hostVars.configurationName}";
+      # NIX_CONFIG_REPO is pinned: hostVars.repoPath is read from it, so a stale
+      # value from the running session would otherwise reproduce itself.
+      nix-reb = "env NIX_CONFIG_REPO=${hostVars.repoPath} home-manager switch --impure --flake ${hostVars.repoPath}#${hostVars.configurationName}";
       nix-pull = "git -C ${hostVars.repoPath} pull --ff-only";
       nix-deploy = "${hostVars.repoPath}/scripts/deploy-ubuntu.sh";
       nix-open = "$EDITOR ${hostVars.repoPath}";

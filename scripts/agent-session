@@ -1,317 +1,335 @@
 #!/usr/bin/env python3
-"""agent-session — Autonomous AI coding agent launcher & lifecycle manager in tmux.
+"""agent-session — interactive AI coding agents in background tmux sessions.
 
-Features:
-- Spawns agents (codex, agy, claude, kimi) in isolated tmux sessions.
-- Full A2A mesh networking and automatic wakeups.
-- Intelligent Idle & Cache-Aware Lifecycle Management:
-    • claude: Auto-terminates when prompt cache expires (5 min inactivity).
-    • codex, agy, kimi: Auto-terminates after 30 min of inactivity (configurable via --ttl).
-    • Quota Auto-Kill: Terminates automatically if 5h or 7d quota drops to 0%.
-- Watchdog daemon runs only while sessions are active and auto-exits when all are stopped.
+- Starts codex, agy, claude or kimi in a tmux session named
+  agent-<agent>-<project> (several per agent, --name to override).
+- Optional --task: the agent starts working on it right away.
+- Lifecycle watchdog (runs only while sessions exist), per session:
+    • idle = no pane output change, no transcript write for this cwd and no
+      A2A task in progress on this agent's bridge.
+    • claude: stops after the prompt-cache TTL (5 min, or 1 h with a 1 h
+      cache) of idleness; others after 30 min (override with --ttl).
+    • stops any agent whose 5h or 7d quota reached 0%.
+
+Usage: agent-session start|run <agent> [dir] [--name N] [--ttl 15m|cache|never] [--task "…"]
+       agent-session attach|stop <session|agent|all>
+       agent-session status
 """
 
-import sys
-import os
-import time
-import json
-import glob
-import subprocess
 import argparse
+import glob
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
 import urllib.request
 
-SESSION_PREFIX = "agent"
-RUN_DIR = f"/run/user/{os.getuid()}/agent-session" if os.path.exists(f"/run/user/{os.getuid()}") else os.path.expanduser("~/.cache/agent-session")
+PREFIX = "agent-"
+HOME = os.path.expanduser("~")
+RUN_DIR = f"/run/user/{os.getuid()}/agent-session" if os.path.isdir(f"/run/user/{os.getuid()}") \
+    else os.path.join(HOME, ".cache/agent-session")
 os.makedirs(RUN_DIR, exist_ok=True)
-
-DEFAULT_POLICIES = {
-    "claude": {"mode": "cache-expire", "default_ttl_sec": 300},
-    "codex": {"mode": "idle", "default_ttl_sec": 1800},
-    "agy": {"mode": "idle", "default_ttl_sec": 1800},
-    "kimi": {"mode": "idle", "default_ttl_sec": 1800},
-}
+STATE_ROOT = os.path.join(HOME, ".a2abridge/state")
+WATCH_INTERVAL = 15
+STATUS_LINES = 4  # bottom pane lines ignored for activity (status lines tick on their own)
 
 COMMANDS = {
-    "codex": "codex --no-daemon --dangerously-bypass-approvals-and-sandbox",
-    "agy": "agy --dangerously-skip-permissions",
-    "claude": "claude --permission-mode auto",
-    "kimi": "kimi --auto",
+    "codex": ["codex", "--no-daemon", "--dangerously-bypass-approvals-and-sandbox"],
+    "agy": ["agy", "--dangerously-skip-permissions"],
+    "claude": ["claude", "--permission-mode", "auto"],
+    "kimi": ["kimi", "--auto"],
 }
+DEFAULT_TTL = {"codex": 1800, "agy": 1800, "kimi": 1800}  # claude: prompt-cache TTL
+QUOTA_KEY = {"claude": "claude", "codex": "codex", "agy": "antigravity", "kimi": "kimi"}
 
 
-def get_session_name(agent: str) -> str:
-    return f"{SESSION_PREFIX}-{agent}"
+# ---------------------------------------------------------------- helpers
 
-
-def get_meta_path(agent: str) -> str:
-    return os.path.join(RUN_DIR, f"{agent}.json")
-
-
-def parse_duration(s: str) -> int:
+def parse_duration(s):
     s = s.strip().lower()
     if s in ("never", "none", "0"):
         return -1
-    if s.endswith("m"):
-        return int(float(s[:-1]) * 60)
-    if s.endswith("h"):
-        return int(float(s[:-1]) * 3600)
-    if s.endswith("s"):
-        return int(float(s[:-1]))
-    return int(float(s))
+    mult = {"s": 1, "m": 60, "h": 3600}.get(s[-1])
+    return int(float(s[:-1]) * mult) if mult else int(float(s))
 
 
-def format_duration(sec: int) -> str:
+def fmt(sec):
     if sec is None or sec < 0:
         return "never"
-    h = sec // 3600
-    m = (sec % 3600) // 60
-    s = sec % 60
-    if h > 0:
-        return f"{h}h {m}m"
-    if m > 0:
-        return f"{m}m {s}s"
-    return f"{s}s"
+    h, m, s = sec // 3600, (sec % 3600) // 60, sec % 60
+    return f"{h}h {m}m" if h else (f"{m}m {s}s" if m else f"{s}s")
 
 
-def has_tmux_session(session_name: str) -> bool:
-    res = subprocess.run(["tmux", "has-session", "-t", session_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return res.returncode == 0
+def tmux(*args, check=False):
+    return subprocess.run(["tmux", *args], capture_output=True, text=True, check=check)
 
 
-def get_session_pid(session_name: str) -> int:
+def sessions():
+    out = tmux("list-sessions", "-F", "#{session_name}").stdout
+    return [s for s in out.split() if s.startswith(PREFIX)]
+
+
+def pane(session, fmt_):
+    out = tmux("list-panes", "-t", session, "-F", fmt_).stdout.strip()
+    return out.splitlines()[0] if out else ""
+
+
+def meta_path(session):
+    return os.path.join(RUN_DIR, f"{session}.json")
+
+
+def load_meta(session):
     try:
-        out = subprocess.check_output(["tmux", "list-panes", "-t", session_name, "-F", "#{pane_pid}"], text=True).strip()
-        return int(out.splitlines()[0])
+        with open(meta_path(session)) as f:
+            return json.load(f)
     except Exception:
-        return 0
+        return {}
 
 
-def get_session_cwd(session_name: str) -> str:
+def save_meta(session, meta):
+    tmp = meta_path(session) + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(meta, f, indent=2)
+    os.replace(tmp, meta_path(session))
+
+
+def drop_meta(session):
     try:
-        out = subprocess.check_output(["tmux", "list-panes", "-t", session_name, "-F", "#{pane_current_path}"], text=True).strip()
-        return out.splitlines()[0]
-    except Exception:
-        return ""
-
-
-# Activity Detection
-def get_last_activity(agent: str) -> float:
-    now = time.time()
-    try:
-        if agent == "codex":
-            files = glob.glob(os.path.expanduser("~/.codex/sessions/*/*/*/*.jsonl"))
-            if files:
-                return max(os.path.getmtime(f) for f in files)
-        elif agent == "claude":
-            files = glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl"))
-            if files:
-                return max(os.path.getmtime(f) for f in files)
-            h = os.path.expanduser("~/.claude/history.jsonl")
-            if os.path.exists(h):
-                return os.path.getmtime(h)
-        elif agent == "agy":
-            files = glob.glob(os.path.expanduser("~/.gemini/antigravity-cli/brain/*/.system_generated/logs/transcript.jsonl"))
-            if files:
-                return max(os.path.getmtime(f) for f in files)
-        elif agent == "kimi":
-            files = glob.glob(os.path.expanduser("~/.kimi-code/sessions/*"))
-            if files:
-                return max(os.path.getmtime(f) for f in files)
-    except Exception:
+        os.remove(meta_path(session))
+    except FileNotFoundError:
         pass
-    return now
 
 
-def get_claude_prompt_cache_status():
-    path = os.path.expanduser("~/.claude/quota_cache.json")
-    if not os.path.exists(path):
-        return None
+def agent_of(session, meta=None):
+    meta = meta or load_meta(session)
+    if meta.get("agent"):
+        return meta["agent"]
+    rest = session[len(PREFIX):]
+    return next((a for a in COMMANDS if rest == a or rest.startswith(a + "-")), None)
+
+
+def slug(s):
+    return re.sub(r"[^A-Za-z0-9_-]", "-", s).strip("-") or "root"
+
+
+def resolve(target):
+    """Session name for a session name, agent name or unique prefix."""
+    all_ = sessions()
+    if target in all_:
+        return target
+    matches = [s for s in all_ if agent_of(s) == target] or [s for s in all_ if s.startswith(PREFIX + target)]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        sys.exit(f"No running session matches '{target}'.")
+    sys.exit(f"'{target}' is ambiguous: {', '.join(matches)}")
+
+
+# ---------------------------------------------------------------- quota
+
+_quota_mod = None
+
+
+def quota_stats(agent):
+    global _quota_mod
     try:
-        with open(path) as f:
-            data = json.load(f)
-        cache = data.get("prompt_cache", {})
-        warm = cache.get("warm", False)
-        expires_at = cache.get("expires_at")
-        rem = max(0, int(expires_at - time.time())) if expires_at else None
-        return {"warm": warm, "expires_at": expires_at, "remaining_sec": rem}
+        if _quota_mod is None:
+            path = shutil.which("agent-quota") or os.path.join(HOME, ".local/bin/agent-quota")
+            loader = importlib.machinery.SourceFileLoader("agent_quota", path)
+            spec = importlib.util.spec_from_loader("agent_quota", loader)
+            _quota_mod = importlib.util.module_from_spec(spec)
+            loader.exec_module(_quota_mod)
+        return _quota_mod.collect_all_stats(QUOTA_KEY[agent]).get(QUOTA_KEY[agent])
     except Exception:
         return None
 
 
-def get_agent_quota_stats(agent: str):
-    try:
-        quota_globals = {}
-        quota_script = os.path.expanduser("~/.local/bin/agent-quota")
-        if not os.path.exists(quota_script):
-            quota_script = "/home/ctn_admin/nix/scripts/agent-quota"
-        with open(quota_script) as f:
-            exec(f.read(), quota_globals)
-
-        if agent == "codex":
-            return quota_globals.get("get_codex_stats", lambda: None)()
-        elif agent == "claude":
-            return quota_globals.get("get_claude_stats", lambda: None)()
-        elif agent == "agy":
-            return quota_globals.get("get_agy_stats", lambda: None)()
-        elif agent == "kimi":
-            return quota_globals.get("get_kimi_stats", lambda: None)()
-    except Exception:
-        pass
+def quota_exhausted(agent, stats=None):
+    q = ((stats if stats is not None else quota_stats(agent)) or {}).get("quota") or {}
+    checks = [
+        ("five_hour_remaining_pct", "five_hour_used_pct", "five_hour_resets_in", "5h"),
+        ("seven_day_remaining_pct", "seven_day_used_pct", "seven_day_resets_in", "7d"),
+        ("weekly_remaining_pct", None, "seven_day_resets_in", "weekly"),
+    ]
+    for rem_k, used_k, reset_k, label in checks:
+        rem, used = q.get(rem_k), q.get(used_k) if used_k else None
+        if (rem is not None and rem <= 0) or (used is not None and used >= 100):
+            return f"{label} quota exhausted (resets in {q.get(reset_k) or 'unknown'})"
     return None
 
 
-def check_agent_quota_exhausted(agent: str):
-    """Checks if agent's 5h or 7d remaining quota has reached 0%."""
-    stats = get_agent_quota_stats(agent)
-    if not stats:
-        return False, "", None
-
-    q = stats.get("quota", {})
-    if not q:
-        return False, "", stats
-
-    # 5-hour window
-    five_rem = q.get("five_hour_remaining_pct")
-    if five_rem is not None and five_rem <= 0:
-        resets = q.get("five_hour_resets_in", "unknown")
-        return True, f"5h quota exhausted (0% remaining, resets in {resets})", stats
-
-    five_used = q.get("five_hour_used_pct")
-    if five_used is not None and five_used >= 100:
-        resets = q.get("five_hour_resets_in", "unknown")
-        return True, f"5h quota exhausted (100% used, resets in {resets})", stats
-
-    # 7-day / weekly window
-    seven_rem = q.get("seven_day_remaining_pct")
-    if seven_rem is None:
-        seven_rem = q.get("weekly_remaining_pct")
-    if seven_rem is not None and seven_rem <= 0:
-        resets = q.get("seven_day_resets_in", "unknown")
-        return True, f"Weekly/7d quota exhausted (0% remaining, resets in {resets})", stats
-
-    seven_used = q.get("seven_day_used_pct")
-    if seven_used is not None and seven_used >= 100:
-        resets = q.get("seven_day_resets_in", "unknown")
-        return True, f"Weekly/7d quota exhausted (100% used, resets in {resets})", stats
-
-    return False, "", stats
-
-
-def is_agent_a2a_working(agent: str) -> bool:
+def claude_cache_ttl():
     try:
-        req = urllib.request.urlopen("http://127.0.0.1:7777/agents", timeout=1)
-        peers = json.loads(req.read().decode())
-        for p in peers:
-            url = p.get("url", "")
+        with open(os.path.join(HOME, ".claude/quota_cache.json")) as f:
+            ttl = str(json.load(f).get("prompt_cache", {}).get("ttl") or "")
+        return 3600 if ttl.startswith("1h") or ttl == "3600" else 300
+    except Exception:
+        return 300
+
+
+# ---------------------------------------------------------------- activity
+
+def descendants(pid):
+    out = subprocess.run(["ps", "-e", "-o", "pid=,ppid="], capture_output=True, text=True).stdout
+    children = {}
+    for line in out.splitlines():
+        p, pp = line.split()
+        children.setdefault(int(pp), []).append(int(p))
+    seen, stack = [], [pid]
+    while stack:
+        p = stack.pop()
+        seen.append(p)
+        stack.extend(children.get(p, []))
+    return seen
+
+
+def newest_mtime(paths):
+    best = 0.0
+    for p in paths:
+        try:
+            best = max(best, os.path.getmtime(p))
+        except OSError:
+            pass
+    return best
+
+
+def transcript_activity(agent, cwd, since):
+    """Last write to this agent's transcript for this working directory."""
+    if agent == "claude":
+        return newest_mtime(glob.glob(os.path.join(HOME, ".claude/projects", re.sub(r"[^A-Za-z0-9]", "-", cwd), "*.jsonl")))
+    if agent == "codex":
+        best = 0.0
+        for f in glob.glob(os.path.join(HOME, ".codex/sessions/*/*/*/*.jsonl")):
             try:
-                creq = urllib.request.urlopen(f"{url}/.well-known/agent-card.json", timeout=0.5)
-                card = json.loads(creq.read().decode())
-                name = card.get("name", "")
-                if agent in name:
-                    treq = urllib.request.urlopen(f"{url}/tasks", timeout=0.5)
-                    tasks = json.loads(treq.read().decode())
-                    for t in tasks:
-                        if t.get("status", {}).get("state") == "TASK_STATE_WORKING":
-                            return True
+                m = os.path.getmtime(f)
+                if m < since or m <= best:
+                    continue
+                with open(f) as fh:
+                    first = json.loads(fh.readline() or "{}")
+                if first.get("payload", {}).get("cwd") == cwd:
+                    best = m
             except Exception:
                 pass
-    except Exception:
-        pass
+        return best
+    if agent == "kimi":
+        files = glob.glob(os.path.join(HOME, ".kimi-code/sessions", f"wd_{os.path.basename(cwd)}_*", "**"), recursive=True)
+        return newest_mtime(files)
+    if agent == "agy":  # transcripts carry no cwd; global, errs towards keeping the session
+        return newest_mtime(glob.glob(os.path.join(HOME, ".gemini/antigravity-cli/brain/*/.system_generated/logs/transcript.jsonl")))
+    return 0.0
+
+
+def pane_activity(session, meta):
+    out = tmux("capture-pane", "-p", "-t", session).stdout.rstrip("\n").splitlines()
+    body = "\n".join(out[:-STATUS_LINES] if len(out) > STATUS_LINES else out)
+    digest = hashlib.sha1(body.encode()).hexdigest()
+    if digest != meta.get("pane_hash"):
+        meta["pane_hash"], meta["pane_changed_at"] = digest, time.time()
+    return meta.get("pane_changed_at", 0.0)
+
+
+def bridge_urls(pane_pid):
+    """A2A URLs of the bridges inside this session (state dirs are keyed by agent pid)."""
+    urls = []
+    for pid in descendants(pane_pid):
+        log = os.path.join(STATE_ROOT, str(pid), "bridge.log")
+        try:
+            with open(log) as f:
+                lines = f.readlines()[-200:]
+        except OSError:
+            continue
+        for line in reversed(lines):
+            if '"a2a server listening"' in line:
+                try:
+                    urls.append(json.loads(line)["url"])
+                except Exception:
+                    pass
+                break
+    return urls
+
+
+def a2a_busy(pane_pid):
+    for url in bridge_urls(pane_pid):
+        try:
+            req = urllib.request.Request(
+                url + "/", method="POST",
+                data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ListTasks", "params": {}}).encode(),
+                headers={"Content-Type": "application/json", "A2A-Version": "1.0"},
+            )
+            tasks = json.load(urllib.request.urlopen(req, timeout=1)).get("result", {}).get("tasks", [])
+            if any(t.get("status", {}).get("state") in ("TASK_STATE_WORKING", "TASK_STATE_SUBMITTED") for t in tasks):
+                return True
+        except Exception:
+            pass
     return False
 
 
-# Lifecycle Watchdog
-def run_watchdog_check():
-    now = time.time()
-    active_count = 0
+def last_activity(session, meta):
+    agent, cwd = agent_of(session, meta), meta.get("cwd") or pane(session, "#{pane_current_path}")
+    since = meta.get("started_at", 0)
+    return max(since, pane_activity(session, meta), transcript_activity(agent, cwd, since))
 
-    for agent in list(DEFAULT_POLICIES.keys()):
-        sname = get_session_name(agent)
-        if not has_tmux_session(sname):
+
+# ---------------------------------------------------------------- watchdog
+
+def kill(session, reason):
+    print(f"[watchdog] stopping '{session}': {reason}", flush=True)
+    tmux("kill-session", "-t", session)
+    drop_meta(session)
+
+
+def watchdog_tick():
+    now, quota_cache = time.time(), {}
+    live = sessions()
+    for stale in glob.glob(os.path.join(RUN_DIR, PREFIX + "*.json")):
+        if os.path.basename(stale)[:-5] not in live:
+            os.remove(stale)
+    for s in live:
+        meta = load_meta(s)
+        agent = agent_of(s, meta)
+        if agent is None:
             continue
-
-        active_count += 1
-        meta_file = get_meta_path(agent)
-        meta = {}
-        if os.path.exists(meta_file):
-            try:
-                with open(meta_file) as f:
-                    meta = json.load(f)
-            except Exception:
-                pass
-
-        mode = meta.get("mode", DEFAULT_POLICIES[agent]["mode"])
-        ttl_sec = meta.get("ttl_sec", DEFAULT_POLICIES[agent]["default_ttl_sec"])
-
-        # 1. QUOTA CHECK: If 5h or 7d usage reached limit (0% remaining), kill immediately!
-        exhausted, quota_reason, _ = check_agent_quota_exhausted(agent)
-        if exhausted:
-            print(f"[Watchdog] Auto-terminating session '{sname}': {quota_reason}", flush=True)
-            subprocess.run(["tmux", "kill-session", "-t", sname], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            if os.path.exists(meta_file):
-                try:
-                    os.remove(meta_file)
-                except Exception:
-                    pass
+        if agent not in quota_cache:
+            quota_cache[agent] = quota_exhausted(agent)
+        if quota_cache[agent]:
+            kill(s, quota_cache[agent])
             continue
-
-        # If ttl is disabled, skip idle checks
-        if ttl_sec == -1:
-            continue
-
-        # If agent is actively processing an A2A task, reset activity
-        if is_agent_a2a_working(agent):
-            continue
-
-        last_act = get_last_activity(agent)
-        idle_sec = max(0, int(now - last_act))
-
-        should_kill = False
-        kill_reason = ""
-
-        # 2. CACHE-EXPIRE OR IDLE CHECK
-        if mode == "cache-expire" and agent == "claude":
-            cinfo = get_claude_prompt_cache_status()
-            if cinfo:
-                if not cinfo.get("warm") or (cinfo.get("remaining_sec") is not None and cinfo["remaining_sec"] <= 0):
-                    if idle_sec >= 30:
-                        should_kill = True
-                        kill_reason = f"Prompt cache expired (warm=False, idle={format_duration(idle_sec)})"
-            else:
-                if idle_sec >= ttl_sec:
-                    should_kill = True
-                    kill_reason = f"Prompt cache timeout reached ({format_duration(idle_sec)} idle)"
-        else:
-            if idle_sec >= ttl_sec:
-                should_kill = True
-                kill_reason = f"Idle timeout of {format_duration(ttl_sec)} reached ({format_duration(idle_sec)} idle)"
-
-        if should_kill:
-            print(f"[Watchdog] Auto-terminating session '{sname}': {kill_reason}", flush=True)
-            subprocess.run(["tmux", "kill-session", "-t", sname], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            if os.path.exists(meta_file):
-                try:
-                    os.remove(meta_file)
-                except Exception:
-                    pass
-
-    return active_count
-
-
-def start_watchdog_daemon():
-    pid_file = os.path.join(RUN_DIR, "watchdog.pid")
-    if os.path.exists(pid_file):
+        ttl = meta.get("ttl_sec")
+        if ttl is None:
+            ttl = claude_cache_ttl() if agent == "claude" else DEFAULT_TTL[agent]
+        act = last_activity(s, meta)
         try:
-            with open(pid_file) as f:
-                pid = int(f.read().strip())
-            os.kill(pid, 0)
-            return
-        except Exception:
-            pass
+            pane_pid = int(pane(s, "#{pane_pid}") or 0)
+        except ValueError:
+            pane_pid = 0
+        if pane_pid and a2a_busy(pane_pid):
+            meta["a2a_busy_at"] = now
+        act = max(act, meta.get("a2a_busy_at", 0))
+        meta["last_activity"] = act
+        if meta:
+            save_meta(s, meta)
+        if ttl != -1 and now - act >= ttl:
+            kill(s, f"idle for {fmt(int(now - act))} (ttl {fmt(ttl)})")
+    return len(sessions())
 
-    script = os.path.abspath(__file__)
-    cmd = [sys.executable, script, "_watchdog_loop"]
-    p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+def ensure_watchdog():
+    pid_file = os.path.join(RUN_DIR, "watchdog.pid")
+    try:
+        with open(pid_file) as f:
+            os.kill(int(f.read().strip()), 0)
+        return
+    except Exception:
+        pass
+    p = subprocess.Popen([sys.executable, os.path.abspath(__file__), "_watchdog"],
+                         stdin=subprocess.DEVNULL, stdout=open(os.path.join(RUN_DIR, "watchdog.log"), "a"),
+                         stderr=subprocess.STDOUT, start_new_session=True)
     with open(pid_file, "w") as f:
         f.write(str(p.pid))
 
@@ -320,258 +338,154 @@ def watchdog_loop():
     pid_file = os.path.join(RUN_DIR, "watchdog.pid")
     with open(pid_file, "w") as f:
         f.write(str(os.getpid()))
-
-    while True:
-        try:
-            active_count = run_watchdog_check()
-            if active_count == 0:
-                break
-        except Exception:
-            pass
-        time.sleep(15)
-
-    if os.path.exists(pid_file):
+    try:
+        while True:
+            try:
+                if watchdog_tick() == 0:
+                    break
+            except Exception as e:
+                print(f"[watchdog] error: {e}", flush=True)
+            time.sleep(WATCH_INTERVAL)
+    finally:
         try:
             os.remove(pid_file)
-        except Exception:
+        except FileNotFoundError:
             pass
 
 
-# Commands
-def cmd_start(args):
-    agent = args.agent
-    if agent not in COMMANDS:
-        print(f"Error: Unknown agent '{agent}'. Choose from: {', '.join(COMMANDS.keys())}", file=sys.stderr)
-        sys.exit(1)
+# ---------------------------------------------------------------- commands
 
-    sname = get_session_name(agent)
-    target_dir = os.path.abspath(args.dir or os.getcwd())
+def cmd_start(a):
+    agent = a.agent
+    target = os.path.abspath(os.path.expanduser(a.dir or os.getcwd()))
+    session = PREFIX + slug(a.name or f"{agent}-{os.path.basename(target)}")
+    if tmux("has-session", "-t", f"={session}").returncode == 0:
+        print(f"Session '{session}' is already running (attach: agent-session attach {session}).")
+        return session
+    if not shutil.which(COMMANDS[agent][0]):
+        sys.exit(f"✗ {agent} is not installed.")
+    if not a.force:
+        reason = quota_exhausted(agent)
+        if reason:
+            sys.exit(f"✗ Cannot start {agent}: {reason}. Use --force to start anyway.")
 
-    if has_tmux_session(sname):
-        print(f"Agent session '{sname}' is already running.")
-        return
-
-    # Check quota before launching
-    if not getattr(args, "force", False):
-        exhausted, reason, _ = check_agent_quota_exhausted(agent)
-        if exhausted:
-            print(f"✗ Cannot start {agent}: {reason}.", file=sys.stderr)
-            print("  Use --force to start anyway.", file=sys.stderr)
-            sys.exit(1)
-
-    cmd = COMMANDS[agent]
-    mode = DEFAULT_POLICIES[agent]["mode"]
-    ttl_sec = DEFAULT_POLICIES[agent]["default_ttl_sec"]
-
-    if args.ttl:
-        if args.ttl.lower() in ("cache", "cache-expire"):
-            mode = "cache-expire"
-            ttl_sec = 300
+    cmd = list(COMMANDS[agent])
+    send_task = None
+    if a.task:
+        if agent in ("claude", "codex"):
+            cmd.append(a.task)
+        elif agent == "agy":
+            cmd += ["--prompt-interactive", a.task]
         else:
-            mode = "idle"
-            ttl_sec = parse_duration(args.ttl)
+            send_task = a.task  # kimi has no initial-prompt flag for interactive mode
 
-    print(f"Starting {agent} in tmux session '{sname}' at {target_dir}...")
-    subprocess.run(["tmux", "new-session", "-d", "-s", sname, "-c", target_dir, cmd], check=True)
+    ttl = None
+    if a.ttl:
+        ttl = None if a.ttl.lower() in ("cache", "cache-expire") else parse_duration(a.ttl)
+
+    tmux("new-session", "-d", "-s", session, "-c", target, *cmd, check=True)
     time.sleep(2)
+    if tmux("has-session", "-t", f"={session}").returncode != 0:
+        sys.exit(f"✗ {agent} exited right after start.")
+    if send_task:
+        time.sleep(3)
+        tmux("send-keys", "-t", session, "-l", send_task)
+        tmux("send-keys", "-t", session, "Enter")
 
-    if has_tmux_session(sname):
-        meta = {
-            "agent": agent,
-            "session": sname,
-            "cwd": target_dir,
-            "started_at": time.time(),
-            "mode": mode,
-            "ttl_sec": ttl_sec,
-        }
-        with open(get_meta_path(agent), "w") as f:
-            json.dump(meta, f, indent=2)
-
-        start_watchdog_daemon()
-
-        ttl_desc = "auto-stop on cache expire" if mode == "cache-expire" else f"auto-stop after {format_duration(ttl_sec)} idle"
-        print(f"✓ {agent} started successfully in session '{sname}'.")
-        print(f"  Lifecycle:   {ttl_desc} · auto-stop on 0% quota")
-        print(f"  Attach with: agent-session attach {agent}")
-        print(f"  Stop with:   agent-session stop {agent}")
-    else:
-        print(f"✗ Failed to start {agent}.", file=sys.stderr)
-        sys.exit(1)
+    save_meta(session, {"agent": agent, "session": session, "cwd": target, "started_at": time.time(), "ttl_sec": ttl})
+    ensure_watchdog()
+    eff = ttl if ttl is not None else (claude_cache_ttl() if agent == "claude" else DEFAULT_TTL[agent])
+    print(f"✓ {agent} running in tmux session '{session}' at {target}")
+    print(f"  lifecycle: stop after {fmt(eff)} idle · stop on 0% quota")
+    print(f"  attach: agent-session attach {session}   stop: agent-session stop {session}")
+    return session
 
 
-def cmd_attach(args):
-    sname = get_session_name(args.agent)
-    if not has_tmux_session(sname):
-        print(f"Error: Session '{sname}' is not running.", file=sys.stderr)
-        sys.exit(1)
-    os.execvp("tmux", ["tmux", "attach-session", "-t", sname])
+def cmd_attach(a):
+    os.execvp("tmux", ["tmux", "attach-session", "-t", resolve(a.target)])
 
 
-def cmd_run(args):
-    cmd_start(args)
-    cmd_attach(args)
+def cmd_stop(a):
+    targets = sessions() if a.target == "all" else [resolve(a.target)]
+    for s in targets:
+        tmux("kill-session", "-t", s)
+        drop_meta(s)
+        print(f"✓ stopped {s}")
+    if not targets:
+        print("No agent sessions running.")
 
 
-def cmd_stop(args):
-    if args.agent == "all":
-        for a in COMMANDS.keys():
-            sname = get_session_name(a)
-            if has_tmux_session(sname):
-                print(f"Stopping {sname}...")
-                subprocess.run(["tmux", "kill-session", "-t", sname])
-                meta = get_meta_path(a)
-                if os.path.exists(meta):
-                    os.remove(meta)
-        print("All agent sessions stopped.")
-        return
-
-    sname = get_session_name(args.agent)
-    if has_tmux_session(sname):
-        print(f"Stopping session '{sname}'...")
-        subprocess.run(["tmux", "kill-session", "-t", sname])
-        meta = get_meta_path(args.agent)
-        if os.path.exists(meta):
-            os.remove(meta)
-        print(f"✓ Session '{sname}' stopped.")
-    else:
-        print(f"Session '{sname}' is not running.")
-
-
-def cmd_status(args):
-    print("=== AI Agent Mesh Sessions ===")
-    print()
+def cmd_status(_a):
     now = time.time()
+    live = sessions()
+    print("=== Agent sessions ===")
+    if not live:
+        print("  (none)")
+    for s in live:
+        meta = load_meta(s)
+        agent = agent_of(s, meta) or "?"
+        ttl = meta.get("ttl_sec")
+        if ttl is None and agent in COMMANDS:
+            ttl = claude_cache_ttl() if agent == "claude" else DEFAULT_TTL[agent]
+        idle = int(now - meta.get("last_activity", meta.get("started_at", now)))
+        stats = quota_stats(agent) if agent in COMMANDS else None
+        q = (stats or {}).get("quota") or {}
+        quota = []
+        for label, key in (("5h", "five_hour_remaining_pct"), ("7d", "seven_day_remaining_pct")):
+            v = q.get(key, q.get("weekly_remaining_pct") if label == "7d" else None)
+            if v is not None:
+                color = "\033[31m" if v <= 10 else "\033[32m"
+                quota.append(f"{label} {color}{v}%\033[0m")
+        life = "ttl never" if ttl == -1 else f"idle {fmt(idle)} · stop in {fmt(max(0, ttl - idle))}"
+        print(f"  \033[1m{s}\033[0m ({agent}) cwd {meta.get('cwd') or pane(s, '#{pane_current_path}')}")
+        print(f"      {life}{' · quota ' + ', '.join(quota) if quota else ''}")
 
-    for a in COMMANDS.keys():
-        sname = get_session_name(a)
-        if has_tmux_session(sname):
-            pid = get_session_pid(sname)
-            cwd = get_session_cwd(sname)
-            meta_file = get_meta_path(a)
-            meta = {}
-            if os.path.exists(meta_file):
-                try:
-                    with open(meta_file) as f:
-                        meta = json.load(f)
-                except Exception:
-                    pass
-
-            mode = meta.get("mode", DEFAULT_POLICIES[a]["mode"])
-            ttl_sec = meta.get("ttl_sec", DEFAULT_POLICIES[a]["default_ttl_sec"])
-
-            last_act = get_last_activity(a)
-            idle_sec = max(0, int(now - last_act))
-
-            # Quota stats
-            stats = get_agent_quota_stats(a)
-            quota_parts = []
-            if stats and "quota" in stats:
-                q = stats["quota"]
-                f_rem = q.get("five_hour_remaining_pct")
-                if f_rem is not None:
-                    c_color = "\033[31m" if f_rem <= 10 else "\033[32m"
-                    quota_parts.append(f"5h: {c_color}{f_rem}%\033[0m")
-                s_rem = q.get("seven_day_remaining_pct")
-                if s_rem is None:
-                    s_rem = q.get("weekly_remaining_pct")
-                if s_rem is not None:
-                    w_color = "\033[31m" if s_rem <= 10 else "\033[32m"
-                    quota_parts.append(f"7d: {w_color}{s_rem}%\033[0m")
-
-            quota_desc = f" · quota: [{', '.join(quota_parts)}]" if quota_parts else ""
-
-            lifecycle_str = ""
-            if mode == "cache-expire" and a == "claude":
-                cinfo = get_claude_prompt_cache_status()
-                if cinfo and cinfo.get("warm"):
-                    rem = cinfo.get("remaining_sec", 0)
-                    lifecycle_str = f"\033[36mcache: warm ({format_duration(rem)} left)\033[0m · auto-kill on expire"
-                else:
-                    lifecycle_str = f"\033[33mcache: expired\033[0m · auto-killing soon"
-            elif ttl_sec == -1:
-                lifecycle_str = "\033[2mttl: never\033[0m"
-            else:
-                rem = max(0, ttl_sec - idle_sec)
-                lifecycle_str = f"idle: {format_duration(idle_sec)} · \033[33mauto-kill in {format_duration(rem)}\033[0m"
-
-            print(f"  \033[1m{a:<10}\033[0m \033[32m[RUNNING]\033[0m in session '{sname}' (pid: {pid})")
-            print(f"             cwd: {cwd}")
-            print(f"             policy: {lifecycle_str}{quota_desc}")
-        else:
-            print(f"  \033[1m{a:<10}\033[0m \033[2m[STOPPED]\033[0m")
-
-    print()
-    print("Active mesh peers on local directory:")
+    print("\n=== A2A peers ===")
     try:
-        req = urllib.request.urlopen("http://127.0.0.1:7777/agents", timeout=1.5)
-        peers = json.loads(req.read().decode())
-        if not peers:
-            print("  (no active peers registered)")
-        for p in peers:
-            url = p.get("url", "")
-            name = "unknown"
-            desc = ""
-            try:
-                creq = urllib.request.urlopen(f"{url}/.well-known/agent-card.json", timeout=0.8)
-                card = json.loads(creq.read().decode())
-                name = card.get("name", "unknown")
-                desc = card.get("description", "")
-            except Exception:
-                pass
-            print(f"  • {name}: {url} ({desc})")
+        peers = json.load(urllib.request.urlopen("http://127.0.0.1:7777/agents", timeout=1.5))
     except Exception as e:
         print(f"  (directory unreachable: {e})")
-    print()
+        return
+    if not peers:
+        print("  (none)")
+    for p in peers:
+        url = p.get("url", "")
+        try:
+            card = json.load(urllib.request.urlopen(url + "/.well-known/agent-card.json", timeout=0.8))
+            skills = ",".join(s.get("name", s.get("id", "")) for s in card.get("skills", []))
+            print(f"  • {card.get('name', '?'):<28} {url}  {skills}")
+        except Exception:
+            print(f"  • (unreachable) {url}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Autonomous AI Agent session runner & lifecycle manager")
-    subparsers = parser.add_subparsers(dest="command")
-
-    # start
-    p_start = subparsers.add_parser("start", help="Start an agent in background tmux session")
-    p_start.add_argument("agent", choices=list(COMMANDS.keys()))
-    p_start.add_argument("dir", nargs="?", default=None, help="Working directory (default: current)")
-    p_start.add_argument("--ttl", help="Auto-kill timeout (e.g. 15m, 1h, cache, never). Defaults: claude=cache, others=30m")
-    p_start.add_argument("--force", action="store_true", help="Start even if quota is exhausted (0%)")
-
-    # run
-    p_run = subparsers.add_parser("run", help="Start and immediately attach to the agent")
-    p_run.add_argument("agent", choices=list(COMMANDS.keys()))
-    p_run.add_argument("dir", nargs="?", default=None)
-    p_run.add_argument("--ttl", help="Auto-kill timeout")
-    p_run.add_argument("--force", action="store_true", help="Start even if quota is exhausted (0%)")
-
-    # attach
-    p_attach = subparsers.add_parser("attach", help="Attach to a running agent session")
-    p_attach.add_argument("agent", choices=list(COMMANDS.keys()))
-
-    # stop
-    p_stop = subparsers.add_parser("stop", help="Stop an agent session (or 'all')")
-    p_stop.add_argument("agent", choices=list(COMMANDS.keys()) + ["all"])
-
-    # status
-    subparsers.add_parser("status", help="Show status of all agent sessions & A2A peers")
-
-    # internal watchdog
-    subparsers.add_parser("_watchdog_loop")
-
-    args = parser.parse_args()
-
-    if args.command == "start":
-        cmd_start(args)
-    elif args.command == "run":
-        cmd_run(args)
-    elif args.command == "attach":
-        cmd_attach(args)
-    elif args.command == "stop":
-        cmd_stop(args)
-    elif args.command == "status":
-        cmd_status(args)
-    elif args.command == "_watchdog_loop":
-        watchdog_loop()
-    else:
-        parser.print_help()
+    if sys.argv[1:2] == ["_watchdog"] or sys.argv[1:2] == ["_watchdog_loop"]:
+        return watchdog_loop()
+    ap = argparse.ArgumentParser(prog="agent-session", description="AI agents in background tmux sessions")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    for name in ("start", "run"):
+        p = sub.add_parser(name, help="start (and for run: attach) an agent session")
+        p.add_argument("agent", choices=list(COMMANDS))
+        p.add_argument("dir", nargs="?")
+        p.add_argument("--name", help="session name (default <agent>-<project>)")
+        p.add_argument("--ttl", help="idle timeout: 15m, 1h, cache, never")
+        p.add_argument("--task", help="initial prompt")
+        p.add_argument("--force", action="store_true", help="start even with 0%% quota")
+    sub.add_parser("attach").add_argument("target")
+    sub.add_parser("stop").add_argument("target", help="session, agent or 'all'")
+    sub.add_parser("status")
+    a = ap.parse_args()
+    if a.cmd == "start":
+        cmd_start(a)
+    elif a.cmd == "run":
+        a.target = cmd_start(a)
+        cmd_attach(a)
+    elif a.cmd == "attach":
+        cmd_attach(a)
+    elif a.cmd == "stop":
+        cmd_stop(a)
+    elif a.cmd == "status":
+        cmd_status(a)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-# Claude Code configuration (status line, A2A MCP bridge, quota MCP, hooks), shared by macOS and Ubuntu.
+# Claude Code configuration (status line, A2A/quota/delegate MCP, inbox hook, permissions), shared by macOS and Ubuntu.
 { hostVars, lib, pkgs, ... }:
 
 let
@@ -9,21 +9,7 @@ let
     refreshInterval = 30;
   };
 
-  a2aMcp = {
-    command = "${hostVars.home}/.a2abridge/bin/a2abridge";
-    args = [ "bridge" ];
-    env = {
-      A2A_DIRECTORY = "http://127.0.0.1:7777";
-      A2A_BIND = "127.0.0.1:0";
-      A2A_ADVERTISE_HOST = "127.0.0.1";
-      A2A_NUDGE = "auto";
-    };
-  };
-
-  quotaMcp = {
-    command = "${hostVars.home}/.local/bin/agent-quota";
-    args = [ "--mcp" ];
-  };
+  mcp = import ./agent-mcp.nix { inherit hostVars; } "claude";
 
   a2aHook = [
     {
@@ -35,6 +21,18 @@ let
         }
       ];
     }
+  ];
+
+  # Mesh tools must work without a prompt: in auto mode the classifier
+  # otherwise blocks a2a_complete_task and peers wait forever. Starting a
+  # subagent (delegate_start) is deliberately left to the permission mode.
+  allowedTools = [
+    "mcp__a2a"
+    "mcp__quota"
+    "mcp__delegate__delegate_wait"
+    "mcp__delegate__delegate_list"
+    "mcp__delegate__delegate_providers"
+    "mcp__delegate__delegate_cancel"
   ];
 in
 {
@@ -48,8 +46,9 @@ in
     executable = true;
   };
 
-  home.file.".claude/skills/a2a-bridge/SKILL.md" = {
-    source = ../../dotfiles/claude/skills/a2a-bridge/SKILL.md;
+  home.file.".claude/skills/a2a-bridge" = {
+    source = ../../dotfiles/agents/skills/a2a-bridge;
+    recursive = true;
   };
 
   # settings.json and ~/.claude.json are also written by Claude Code itself,
@@ -60,29 +59,31 @@ in
     $DRY_RUN_CMD mkdir -p "$HOME/.claude"
 
     if [ -n "''${DRY_RUN_CMD:-}" ]; then
-      echo "would merge statusLine and a2a hook into $settings"
-      echo "would merge a2a and quota MCP into $claudeJson"
+      echo "would merge statusLine, a2a hook and mesh permissions into $settings"
+      echo "would merge a2a, quota and delegate MCP into $claudeJson"
     else
-      # 1. ~/.claude/settings.json (statusLine & a2a inbox hook)
+      # 1. ~/.claude/settings.json (statusLine, a2a inbox hook, mesh permissions)
       [ -s "$settings" ] || echo '{}' > "$settings"
       tmp="$(mktemp)"
       if ${pkgs.jq}/bin/jq \
           --argjson sl '${builtins.toJSON statusLine}' \
           --argjson hook '${builtins.toJSON a2aHook}' \
-          '.statusLine = $sl | .hooks.UserPromptSubmit = $hook' "$settings" > "$tmp"; then
+          --argjson allow '${builtins.toJSON allowedTools}' \
+          '.statusLine = $sl
+           | .hooks.UserPromptSubmit = $hook
+           | .permissions.allow = (((.permissions.allow // []) + $allow) | unique)' \
+          "$settings" > "$tmp"; then
         cat "$tmp" > "$settings"   # keep existing permissions
       else
         echo "claude: could not merge settings into $settings" >&2
       fi
       rm -f "$tmp"
 
-      # 2. ~/.claude.json (mcpServers.a2a & mcpServers.quota)
+      # 2. ~/.claude.json (mcpServers.a2a, .quota, .delegate)
       [ -s "$claudeJson" ] || echo '{}' > "$claudeJson"
       tmp="$(mktemp)"
-      if ${pkgs.jq}/bin/jq \
-          --argjson a2a '${builtins.toJSON a2aMcp}' \
-          --argjson quota '${builtins.toJSON quotaMcp}' \
-          '.mcpServers.a2a = $a2a | .mcpServers.quota = $quota' "$claudeJson" > "$tmp"; then
+      if ${pkgs.jq}/bin/jq --argjson mcp '${builtins.toJSON mcp}' \
+          '.mcpServers += $mcp' "$claudeJson" > "$tmp"; then
         cat "$tmp" > "$claudeJson"
       else
         echo "claude: could not merge MCP servers into $claudeJson" >&2

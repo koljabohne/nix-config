@@ -4,6 +4,7 @@
     ./a2abridge.nix
     ./agy.nix
     ./claude.nix
+    ./codex.nix
     ./git.nix
     ./kimi.nix
     ./dotfiles.nix
@@ -17,16 +18,6 @@
   home.sessionPath = [
     "${hostVars.home}/.local/bin"
   ];
-
-  home.file.".local/bin/agent-quota" = {
-    source = ../../scripts/agent-quota;
-    executable = true;
-  };
-
-  home.file.".local/bin/agent-session" = {
-    source = ../../scripts/agent-session;
-    executable = true;
-  };
 
   home.stateVersion = "24.05";
 

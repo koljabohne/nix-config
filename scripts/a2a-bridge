@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""a2a-bridge — launcher for `a2abridge bridge`, shared by every agent CLI.
+
+Registered as the `a2a` MCP server of claude, codex, agy and kimi
+(`a2a-bridge --provider <name>`). It fixes what the bare bridge gets wrong:
+
+- Identity: a readable name (`codex@nix-pts7`), the model family and skills
+  in the Agent Card, so peers can tell providers apart.
+- One state dir (and so one inbox) per agent process:
+  ~/.a2abridge/state/<agent-pid>. The bare bridge shares ./.a2a between all
+  agents in one project, so agents ate each other's messages.
+- Headless runs (`claude -p`, `codex exec`, `agy --print`, `kimi -p`,
+  anything under `agent-run`) get an empty MCP server instead of a bridge:
+  they would register as peers that never answer.
+- TMUX/TMUX_PANE are recovered from the agent's tty when the agent strips
+  them from the MCP environment (codex does), so tty nudges keep working.
+
+Overrides: A2A_FORCE_BRIDGE=1 (bridge even when headless), A2A_NAME,
+A2A_MODEL, A2A_SKILLS.
+"""
+
+import json
+import os
+import secrets
+import subprocess
+import sys
+
+HOME = os.environ.get("HOME") or os.path.expanduser("~")
+BINARY = os.path.join(HOME, ".a2abridge", "bin", "a2abridge")
+STATE_ROOT = os.path.join(HOME, ".a2abridge", "state")
+
+PROVIDERS = {
+    "claude": {"family": "anthropic/claude", "skills": "provider:anthropic,claude,coding,review,refactor,planning"},
+    "codex": {"family": "openai/gpt", "skills": "provider:openai,codex,coding,review,refactor,tests"},
+    "agy": {"family": "google/gemini", "skills": "provider:google,antigravity,gemini,coding,long-context,research"},
+    "kimi": {"family": "moonshot/kimi", "skills": "provider:moonshot,kimi,coding,review"},
+}
+AGENT_PROGS = {"claude", "codex", "agy", "kimi", "antigravity"}
+HEADLESS_FLAGS = {"-p", "--print", "--prompt"}
+
+
+def proc_cmdline(pid):
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return [a.decode(errors="replace") for a in f.read().split(b"\0") if a]
+    except OSError:
+        out = subprocess.run(["ps", "-o", "args=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+        return out.split() if out else []
+
+
+def proc_ppid(pid):
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return int(f.read().rsplit(")", 1)[1].split()[1])
+    except OSError:
+        out = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+        return int(out) if out.isdigit() else 0
+
+
+def ancestors(limit=8):
+    pid = os.getppid()
+    for _ in range(limit):
+        if pid <= 1:
+            return
+        yield pid, proc_cmdline(pid)
+        pid = proc_ppid(pid)
+
+
+def prog_of(argv):
+    if not argv:
+        return ""
+    prog = os.path.basename(argv[0])
+    if prog in ("node", "bun", "deno", "python3", "python") and len(argv) > 1:
+        prog = os.path.basename(argv[1])
+    # The claude native binary is named after its version (…/versions/2.1.322).
+    if "/claude/versions/" in argv[0]:
+        return "claude"
+    return prog
+
+
+def is_headless():
+    for _, argv in ancestors():
+        prog = prog_of(argv)
+        if prog == "agent-run":
+            return True
+        if prog.split("-")[0] in AGENT_PROGS:
+            args = argv[1:]
+            if any(a in HEADLESS_FLAGS for a in args):
+                return True
+            if prog.startswith("codex") and "exec" in args[:3]:
+                return True
+            return False
+    return False
+
+
+def agent_pid():
+    """PID of the agent CLI that spawned us (state dir key, also used by the hook)."""
+    first = os.getppid()
+    for pid, argv in ancestors():
+        if prog_of(argv).split("-")[0] in AGENT_PROGS:
+            return pid
+    return first
+
+
+def agent_tty():
+    for pid, _ in ancestors():
+        out = subprocess.run(["ps", "-o", "tty=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+        if out and out != "?":
+            return out
+    return ""
+
+
+def recover_tmux(env, tty):
+    if env.get("TMUX") or not tty:
+        return
+    uid = os.getuid()
+    candidates = [f"/run/user/{uid}/tmux-{uid}/default", f"/tmp/tmux-{uid}/default"]
+    for sock in candidates:
+        if not os.path.exists(sock):
+            continue
+        res = subprocess.run(
+            ["tmux", "-S", sock, "list-panes", "-a", "-F", "#{pane_tty} #{socket_path},#{pid},#{session_id} #{pane_id}"],
+            capture_output=True, text=True,
+        )
+        for line in res.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 3 and parts[0] == f"/dev/{tty}":
+                env["TMUX"], env["TMUX_PANE"] = parts[1], parts[2]
+                return
+
+
+def codex_model():
+    try:
+        import tomllib
+        with open(os.path.join(HOME, ".codex", "config.toml"), "rb") as f:
+            return tomllib.load(f).get("model")
+    except Exception:
+        return None
+
+
+def serve_empty_mcp():
+    """Minimal MCP server without tools, for headless agent runs."""
+    for line in sys.stdin:
+        try:
+            req = json.loads(line)
+        except ValueError:
+            continue
+        if "id" not in req:
+            continue
+        method = req.get("method")
+        if method == "initialize":
+            result = {
+                "protocolVersion": req.get("params", {}).get("protocolVersion", "2024-11-05"),
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "a2a (disabled in headless mode)", "version": "1"},
+            }
+        elif method == "tools/list":
+            result = {"tools": []}
+        elif method in ("resources/list", "prompts/list"):
+            result = {method.split("/")[0]: []}
+        elif method == "ping":
+            result = {}
+        else:
+            resp = {"jsonrpc": "2.0", "id": req["id"], "error": {"code": -32601, "message": "method not found"}}
+            print(json.dumps(resp), flush=True)
+            continue
+        print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": result}), flush=True)
+
+
+def cleanup_dead_state_dirs():
+    try:
+        for name in os.listdir(STATE_ROOT):
+            if not name.isdigit():
+                continue
+            try:
+                os.kill(int(name), 0)
+            except ProcessLookupError:
+                subprocess.run(["rm", "-rf", os.path.join(STATE_ROOT, name)])
+            except PermissionError:
+                pass
+    except FileNotFoundError:
+        pass
+
+
+def main():
+    argv = sys.argv[1:]
+    provider = "agent"
+    if len(argv) >= 2 and argv[0] == "--provider":
+        provider, argv = argv[1], argv[2:]
+
+    if is_headless() and os.environ.get("A2A_FORCE_BRIDGE") != "1":
+        serve_empty_mcp()
+        return
+
+    env = dict(os.environ)
+    env.setdefault("HOME", HOME)
+    env["PATH"] = os.pathsep.join(
+        p for p in [os.path.join(HOME, ".local/bin"), os.path.join(HOME, ".nix-profile/bin"),
+                    "/etc/profiles/per-user/" + os.environ.get("USER", ""), "/run/current-system/sw/bin",
+                    "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", env.get("PATH", "")] if p
+    )
+    uid = os.getuid()
+    if os.path.isdir(f"/run/user/{uid}"):
+        env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
+
+    tty = agent_tty()
+    recover_tmux(env, tty)
+
+    apid = agent_pid()
+    cleanup_dead_state_dirs()
+    state_dir = os.path.join(STATE_ROOT, str(apid))
+    os.makedirs(state_dir, exist_ok=True)
+
+    project = os.path.basename(os.getcwd().rstrip("/")) or "root"
+    suffix = tty.replace("/", "") if tty else secrets.token_hex(2)
+    info = PROVIDERS.get(provider, {"family": provider, "skills": f"provider:{provider}"})
+    model = env.get("A2A_MODEL")
+    if not model and provider == "codex" and codex_model():
+        model = f"openai/{codex_model()}"
+    model = model or info["family"]
+    name = env.get("A2A_NAME") or f"{provider}@{project}-{suffix}"
+
+    with open(os.path.join(state_dir, "meta.json"), "w") as f:
+        json.dump({"provider": provider, "name": name, "agent_pid": apid, "cwd": os.getcwd(), "tty": tty}, f)
+
+    args = [BINARY, "bridge", "-name", name, "-model", model,
+            "-skills", env.get("A2A_SKILLS") or info["skills"], "-state-dir", state_dir] + argv
+    os.execve(BINARY, args, env)
+
+
+if __name__ == "__main__":
+    main()

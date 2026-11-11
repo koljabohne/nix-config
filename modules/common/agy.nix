@@ -1,4 +1,4 @@
-# Antigravity (agy) configuration (status line, A2A MCP bridge, quota MCP), shared by macOS and Ubuntu.
+# Antigravity (agy) configuration (status line, A2A, quota and delegate MCP), shared by macOS and Ubuntu.
 { hostVars, lib, pkgs, ... }:
 
 let
@@ -9,21 +9,7 @@ let
     refreshInterval = 30;
   };
 
-  a2aMcp = {
-    command = "${hostVars.home}/.a2abridge/bin/a2abridge";
-    args = [ "bridge" ];
-    env = {
-      A2A_DIRECTORY = "http://127.0.0.1:7777";
-      A2A_BIND = "127.0.0.1:0";
-      A2A_ADVERTISE_HOST = "127.0.0.1";
-      A2A_NUDGE = "auto";
-    };
-  };
-
-  quotaMcp = {
-    command = "${hostVars.home}/.local/bin/agent-quota";
-    args = [ "--mcp" ];
-  };
+  mcp = import ./agent-mcp.nix { inherit hostVars; } "agy";
 in
 {
   home.file.".gemini/antigravity-cli/statusline.sh" = {
@@ -40,7 +26,7 @@ in
 
     if [ -n "''${DRY_RUN_CMD:-}" ]; then
       echo "would merge statusLine into $settings"
-      echo "would merge a2a and quota MCP into $mcpConfig"
+      echo "would merge a2a, quota and delegate MCP into $mcpConfig"
     else
       # 1. ~/.gemini/antigravity-cli/settings.json (statusLine)
       [ -s "$settings" ] || echo '{}' > "$settings"
@@ -53,13 +39,11 @@ in
       fi
       rm -f "$tmp"
 
-      # 2. ~/.gemini/config/mcp_config.json (mcpServers.a2a & mcpServers.quota)
+      # 2. ~/.gemini/config/mcp_config.json (mcpServers.a2a, .quota, .delegate)
       [ -s "$mcpConfig" ] || echo '{"mcpServers":{}}' > "$mcpConfig"
       tmp="$(mktemp)"
-      if ${pkgs.jq}/bin/jq \
-          --argjson a2a '${builtins.toJSON a2aMcp}' \
-          --argjson quota '${builtins.toJSON quotaMcp}' \
-          '.mcpServers.a2a = $a2a | .mcpServers.quota = $quota' "$mcpConfig" > "$tmp"; then
+      if ${pkgs.jq}/bin/jq --argjson mcp '${builtins.toJSON mcp}' \
+          '.mcpServers += $mcp' "$mcpConfig" > "$tmp"; then
         cat "$tmp" > "$mcpConfig"
       else
         echo "agy: could not merge MCP servers into $mcpConfig" >&2

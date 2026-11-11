@@ -1,0 +1,509 @@
+#!/usr/bin/env python3
+"""agent-run — run a task headless on any agent CLI (claude, codex, agy, kimi).
+
+Cross-provider subagents: one uniform interface over `claude -p`,
+`codex exec`, `agy --print` and `kimi -p`. Jobs run detached and keep their
+prompt, log and final answer in ~/.local/state/agent-run/jobs/<id>/.
+
+CLI:
+  agent-run exec <provider> "<task>" [--dir D] [--model M] [--readonly] [--timeout 30m] [--json]
+  agent-run start <provider> "<task>" [...]   → prints job id
+  agent-run wait <id> [--timeout 10m]         → prints result when done
+  agent-run status [<id>] | list | result <id> | cancel <id>
+  agent-run providers                         → installed CLIs + quota
+  agent-run --mcp                             → MCP server (delegate_* tools)
+
+Safety: subagents may delegate again only up to AGENT_RUN_MAX_DEPTH (default 2).
+--readonly: codex runs in its read-only sandbox, claude in plan mode, agy in
+its terminal sandbox; agy and kimi additionally get a read-only instruction
+(their plan modes block in headless runs). Without --readonly the subagent may
+edit files in --dir (same permissions as `agent-session`).
+"""
+
+import argparse
+import importlib.machinery
+import importlib.util
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+import uuid
+
+HOME = os.path.expanduser("~")
+STATE = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.join(HOME, ".local/state")), "agent-run")
+JOBS = os.path.join(STATE, "jobs")
+MAX_DEPTH = int(os.environ.get("AGENT_RUN_MAX_DEPTH", "2"))
+DEPTH = int(os.environ.get("AGENT_RUN_DEPTH", "0"))
+ARG_LIMIT = 100_000  # longer prompts go through a file (MAX_ARG_STRLEN is 128 KiB)
+PROVIDERS = ("claude", "codex", "agy", "kimi")
+ALIASES = {"antigravity": "agy", "gemini": "agy", "openai": "codex", "gpt": "codex", "anthropic": "claude", "moonshot": "kimi"}
+QUOTA_KEY = {"claude": "claude", "codex": "codex", "agy": "antigravity", "kimi": "kimi"}
+READONLY_PREAMBLE = (
+    "READ-ONLY TASK: do not create, modify or delete any file and run no command that changes state "
+    "(no git commit/checkout, no installs, no writes). Only read, search and analyse.\n\n"
+)
+
+
+# ---------------------------------------------------------------- helpers
+
+def parse_duration(s):
+    if s is None:
+        return None
+    s = str(s).strip().lower()
+    if s in ("", "0", "none", "never"):
+        return None
+    mult = {"s": 1, "m": 60, "h": 3600}.get(s[-1])
+    return int(float(s[:-1]) * mult) if mult else int(float(s))
+
+
+def provider_name(p):
+    p = (p or "").strip().lower()
+    p = ALIASES.get(p, p)
+    if p not in PROVIDERS:
+        raise ValueError(f"unknown provider '{p}' (choose {', '.join(PROVIDERS)})")
+    return p
+
+
+def job_dir(job_id):
+    return os.path.join(JOBS, job_id)
+
+
+def read_json(path, default=None):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def write_json(path, data):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+
+
+def alive(pid):
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+_quota_mod = None
+
+
+def quota_stats(provider):
+    """Quota of one provider via agent-quota (None if unknown)."""
+    global _quota_mod
+    try:
+        if _quota_mod is None:
+            path = shutil.which("agent-quota") or os.path.join(HOME, ".local/bin/agent-quota")
+            loader = importlib.machinery.SourceFileLoader("agent_quota", path)
+            spec = importlib.util.spec_from_loader("agent_quota", loader)
+            _quota_mod = importlib.util.module_from_spec(spec)
+            loader.exec_module(_quota_mod)
+        return _quota_mod.collect_all_stats(QUOTA_KEY[provider]).get(QUOTA_KEY[provider])
+    except Exception:
+        return None
+
+
+def quota_exhausted(provider):
+    s = quota_stats(provider) or {}
+    q = s.get("quota") or {}
+    for key in ("five_hour_remaining_pct", "seven_day_remaining_pct", "weekly_remaining_pct"):
+        v = q.get(key)
+        if v is not None and v <= 0:
+            return f"{provider}: {key} is 0%"
+    return None
+
+
+def build_command(provider, prompt, cwd, model, readonly, out_file):
+    if provider == "claude":
+        cmd = ["claude", "-p", prompt, "--permission-mode", "plan" if readonly else "auto"]
+        if model:
+            cmd += ["--model", model]
+    elif provider == "codex":
+        cmd = ["codex", "exec", "--skip-git-repo-check", "-C", cwd, "-o", out_file]
+        cmd += ["-s", "read-only"] if readonly else ["--dangerously-bypass-approvals-and-sandbox"]
+        if model:
+            cmd += ["-m", model]
+        cmd.append(prompt)
+    elif provider == "agy":
+        # Plan mode waits for a review that never comes in print mode: read-only
+        # is the sandbox (terminal restrictions) plus READONLY_PREAMBLE.
+        cmd = ["agy", "--print-timeout", "0s", "--dangerously-skip-permissions"]
+        if readonly:
+            cmd.append("--sandbox")
+        if model:
+            cmd += ["--model", model]
+        cmd += ["-p", prompt]
+    else:  # kimi — same plan-mode problem; read-only relies on READONLY_PREAMBLE
+        cmd = ["kimi", "--auto", "-p", prompt]
+        if model:
+            cmd += ["-m", model]
+    return cmd
+
+
+# ---------------------------------------------------------------- jobs
+
+def create_job(provider, task, cwd=None, model=None, readonly=False, timeout=None):
+    provider = provider_name(provider)
+    if DEPTH >= MAX_DEPTH:
+        raise RuntimeError(f"delegation depth {DEPTH} reached AGENT_RUN_MAX_DEPTH={MAX_DEPTH}; do the work yourself")
+    if not shutil.which(provider):
+        raise RuntimeError(f"{provider} CLI is not installed / not on PATH")
+    reason = quota_exhausted(provider)
+    if reason:
+        raise RuntimeError(f"quota exhausted ({reason}); pick another provider")
+    cwd = os.path.abspath(os.path.expanduser(cwd or os.getcwd()))
+    if not os.path.isdir(cwd):
+        raise RuntimeError(f"directory does not exist: {cwd}")
+
+    job_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
+    d = job_dir(job_id)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "prompt.txt"), "w") as f:
+        f.write(task)
+    meta = {
+        "id": job_id, "provider": provider, "cwd": cwd, "model": model, "readonly": bool(readonly),
+        "timeout_sec": timeout, "state": "queued", "created_at": time.time(), "depth": DEPTH + 1,
+        "task_preview": task.strip().replace("\n", " ")[:160],
+    }
+    write_json(os.path.join(d, "meta.json"), meta)
+    subprocess.Popen(
+        [sys.executable, os.path.abspath(__file__), "_run", job_id],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+    )
+    return meta
+
+
+def run_job(job_id):
+    d = job_dir(job_id)
+    meta_path = os.path.join(d, "meta.json")
+    meta = read_json(meta_path)
+    with open(os.path.join(d, "prompt.txt")) as f:
+        task = f.read()
+    provider, cwd = meta["provider"], meta["cwd"]
+    out_file = os.path.join(d, "result.txt")
+
+    if meta.get("readonly"):
+        task = READONLY_PREAMBLE + task
+    prompt = task
+    if len(task) > ARG_LIMIT:
+        prompt = (f"Your full task is in the file {os.path.join(d, 'prompt.txt')}. Read it completely "
+                  "(in parts if needed) and follow it exactly.")
+    cmd = build_command(provider, prompt, cwd, meta.get("model"), meta.get("readonly"), out_file)
+    if provider == "agy" and prompt is not task:
+        cmd[1:1] = ["--add-dir", d]
+
+    env = dict(os.environ, AGENT_RUN_DEPTH=str(meta.get("depth", 1)), AGENT_RUN_JOB=job_id)
+    log = open(os.path.join(d, "log.txt"), "w")
+    stdout = open(os.path.join(d, "stdout.txt"), "w")
+    proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=stdout, stderr=log,
+                            start_new_session=True)
+    meta.update(state="running", pid=proc.pid, runner_pid=os.getpid(), started_at=time.time())
+    write_json(meta_path, meta)
+
+    timeout = meta.get("timeout_sec")
+    try:
+        code = proc.wait(timeout=timeout)
+        state = "completed" if code == 0 else "failed"
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGTERM)
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+        code, state = None, "timeout"
+    stdout.close()
+    log.close()
+
+    if not (os.path.exists(out_file) and os.path.getsize(out_file) > 0):
+        shutil.copyfile(os.path.join(d, "stdout.txt"), out_file)
+    meta = read_json(meta_path, meta)
+    if meta.get("state") == "canceled":
+        state = "canceled"
+    meta.update(state=state, exit_code=code, finished_at=time.time())
+    write_json(meta_path, meta)
+
+
+def job_meta(job_id):
+    meta = read_json(os.path.join(job_dir(job_id), "meta.json"))
+    if meta is None:
+        raise RuntimeError(f"unknown job '{job_id}'")
+    if meta["state"] in ("queued", "running") and not alive(meta.get("runner_pid")) \
+            and time.time() - meta["created_at"] > 30:
+        meta["state"] = "lost"
+    return meta
+
+
+def job_result(job_id, tail=60_000):
+    d = job_dir(job_id)
+    meta = job_meta(job_id)
+    res = {k: meta.get(k) for k in ("id", "provider", "state", "exit_code", "cwd", "readonly")}
+    if meta.get("started_at"):
+        res["runtime_sec"] = int((meta.get("finished_at") or time.time()) - meta["started_at"])
+    if meta["state"] not in ("queued", "running"):
+        try:
+            with open(os.path.join(d, "result.txt")) as f:
+                text = f.read()
+            res["result"] = text if len(text) <= tail else "…(truncated)…\n" + text[-tail:]
+        except FileNotFoundError:
+            res["result"] = ""
+        if meta["state"] != "completed":
+            try:
+                with open(os.path.join(d, "log.txt")) as f:
+                    res["stderr_tail"] = f.read()[-4000:]
+            except FileNotFoundError:
+                pass
+    res["files"] = d
+    return res
+
+
+def wait_job(job_id, timeout=None):
+    deadline = time.time() + timeout if timeout else None
+    while True:
+        meta = job_meta(job_id)
+        if meta["state"] not in ("queued", "running"):
+            return job_result(job_id)
+        if deadline and time.time() >= deadline:
+            return job_result(job_id)
+        time.sleep(2)
+
+
+def cancel_job(job_id):
+    meta = job_meta(job_id)
+    if meta["state"] not in ("queued", "running"):
+        return meta
+    meta["state"] = "canceled"
+    write_json(os.path.join(job_dir(job_id), "meta.json"), meta)
+    for key in ("pid",):
+        if alive(meta.get(key)):
+            try:
+                os.killpg(meta[key], signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+    return meta
+
+
+def list_jobs(limit=20):
+    try:
+        ids = sorted(os.listdir(JOBS), reverse=True)[:limit]
+    except FileNotFoundError:
+        return []
+    out = []
+    for i in ids:
+        try:
+            m = job_meta(i)
+        except RuntimeError:
+            continue
+        out.append({k: m.get(k) for k in ("id", "provider", "state", "cwd", "task_preview")})
+    return out
+
+
+def providers_info():
+    info = []
+    for p in PROVIDERS:
+        s = quota_stats(p) or {}
+        q = s.get("quota") or {}
+        info.append({
+            "provider": p,
+            "installed": bool(shutil.which(p)),
+            "five_hour_remaining_pct": q.get("five_hour_remaining_pct"),
+            "seven_day_remaining_pct": q.get("seven_day_remaining_pct", q.get("weekly_remaining_pct")),
+            "exhausted": quota_exhausted(p),
+        })
+    return info
+
+
+def prune(days=7):
+    cutoff = time.time() - days * 86400
+    for i in os.listdir(JOBS) if os.path.isdir(JOBS) else []:
+        m = read_json(os.path.join(job_dir(i), "meta.json"), {})
+        if m.get("state") not in ("queued", "running") and m.get("created_at", 0) < cutoff:
+            shutil.rmtree(job_dir(i), ignore_errors=True)
+
+
+# ---------------------------------------------------------------- MCP
+
+MCP_TOOLS = [
+    {
+        "name": "delegate_start",
+        "description": (
+            "Start a headless subagent on another provider (claude=Anthropic, codex=OpenAI, agy=Google Gemini 1M ctx, "
+            "kimi=Moonshot) and return a job id. The subagent gets NO conversation context: put everything it needs "
+            "(goal, files, constraints, expected output format) into `task`. Use readonly=true for reviews/research. "
+            "Then call delegate_wait. Prefer a provider with quota left (delegate_providers)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "provider": {"type": "string", "enum": list(PROVIDERS)},
+                "task": {"type": "string", "description": "Self-contained instructions"},
+                "dir": {"type": "string", "description": "Working directory (default: your cwd)"},
+                "model": {"type": "string", "description": "Provider-specific model id (optional)"},
+                "readonly": {"type": "boolean", "default": False},
+                "timeout_min": {"type": "number", "description": "Kill after N minutes (default 60)"},
+            },
+            "required": ["provider", "task"],
+        },
+    },
+    {
+        "name": "delegate_wait",
+        "description": "Wait up to wait_s seconds (default 240, max 600) for a job; returns state and, when finished, the subagent's final answer. Call again while state is running.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"job_id": {"type": "string"}, "wait_s": {"type": "number"}},
+            "required": ["job_id"],
+        },
+    },
+    {
+        "name": "delegate_list",
+        "description": "List recent subagent jobs with their state.",
+        "inputSchema": {"type": "object", "properties": {"limit": {"type": "number"}}},
+    },
+    {
+        "name": "delegate_cancel",
+        "description": "Cancel a running subagent job.",
+        "inputSchema": {"type": "object", "properties": {"job_id": {"type": "string"}}, "required": ["job_id"]},
+    },
+    {
+        "name": "delegate_providers",
+        "description": "Installed agent CLIs and their remaining 5h / 7d quota, to pick a delegate.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+]
+
+
+def mcp_call(name, args):
+    if name == "delegate_start":
+        timeout = int(float(args.get("timeout_min") or 60) * 60)
+        return create_job(args["provider"], args["task"], args.get("dir"), args.get("model"),
+                          args.get("readonly", False), timeout)
+    if name == "delegate_wait":
+        return wait_job(args["job_id"], min(float(args.get("wait_s") or 240), 600))
+    if name == "delegate_list":
+        return list_jobs(int(args.get("limit") or 20))
+    if name == "delegate_cancel":
+        return cancel_job(args["job_id"])
+    if name == "delegate_providers":
+        return providers_info()
+    raise ValueError(f"unknown tool {name}")
+
+
+def run_mcp():
+    for line in sys.stdin:
+        try:
+            req = json.loads(line)
+        except ValueError:
+            continue
+        if "id" not in req:
+            continue
+        method, rid = req.get("method"), req["id"]
+        try:
+            if method == "initialize":
+                result = {"protocolVersion": req.get("params", {}).get("protocolVersion", "2024-11-05"),
+                          "capabilities": {"tools": {}}, "serverInfo": {"name": "agent-run", "version": "1"}}
+            elif method == "tools/list":
+                result = {"tools": MCP_TOOLS}
+            elif method == "tools/call":
+                p = req.get("params", {})
+                try:
+                    data = mcp_call(p.get("name"), p.get("arguments") or {})
+                    result = {"content": [{"type": "text", "text": json.dumps(data, indent=2)}]}
+                except Exception as e:
+                    result = {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+            elif method == "ping":
+                result = {}
+            else:
+                print(json.dumps({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "method not found"}}), flush=True)
+                continue
+            print(json.dumps({"jsonrpc": "2.0", "id": rid, "result": result}), flush=True)
+        except Exception as e:
+            print(json.dumps({"jsonrpc": "2.0", "id": rid, "error": {"code": -32603, "message": str(e)}}), flush=True)
+
+
+# ---------------------------------------------------------------- CLI
+
+def main():
+    if "--mcp" in sys.argv[1:2]:
+        os.makedirs(JOBS, exist_ok=True)
+        prune()
+        return run_mcp()
+    if sys.argv[1:2] == ["_run"]:
+        return run_job(sys.argv[2])
+
+    ap = argparse.ArgumentParser(prog="agent-run", description=__doc__.split("\n\n")[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    for name in ("exec", "start"):
+        p = sub.add_parser(name)
+        p.add_argument("provider")
+        p.add_argument("task", help="task text, or - to read stdin")
+        p.add_argument("--dir")
+        p.add_argument("--model")
+        p.add_argument("--readonly", action="store_true")
+        p.add_argument("--timeout", default="60m")
+        p.add_argument("--json", action="store_true")
+    p = sub.add_parser("wait")
+    p.add_argument("id")
+    p.add_argument("--timeout")
+    p.add_argument("--json", action="store_true")
+    for name in ("result", "cancel"):
+        sub.add_parser(name).add_argument("id")
+    sub.add_parser("status").add_argument("id", nargs="?")
+    sub.add_parser("list")
+    sub.add_parser("providers")
+    a = ap.parse_args()
+    os.makedirs(JOBS, exist_ok=True)
+
+    def emit(data, as_json=True):
+        if as_json or not isinstance(data, dict) or "result" not in data:
+            print(json.dumps(data, indent=2))
+        else:
+            if data["state"] != "completed":
+                print(f"[{data['provider']} job {data['id']}: {data['state']}]", file=sys.stderr)
+                if data.get("stderr_tail"):
+                    print(data["stderr_tail"], file=sys.stderr)
+            print(data.get("result", ""))
+
+    try:
+        if a.cmd in ("exec", "start"):
+            task = sys.stdin.read() if a.task == "-" else a.task
+            meta = create_job(a.provider, task, a.dir, a.model, a.readonly, parse_duration(a.timeout))
+            if a.cmd == "start":
+                print(meta["id"])
+                return
+            res = wait_job(meta["id"])
+            emit(res, a.json)
+            sys.exit(0 if res["state"] == "completed" else 1)
+        elif a.cmd == "wait":
+            res = wait_job(a.id, parse_duration(a.timeout))
+            emit(res, a.json)
+            sys.exit(0 if res["state"] == "completed" else (3 if res["state"] == "running" else 1))
+        elif a.cmd == "result":
+            emit(job_result(a.id))
+        elif a.cmd == "status":
+            emit(job_meta(a.id) if a.id else list_jobs())
+        elif a.cmd == "list":
+            for j in list_jobs():
+                print(f"{j['id']}  {j['provider']:<6} {j['state']:<9} {j['task_preview'][:70]}")
+        elif a.cmd == "cancel":
+            emit(cancel_job(a.id))
+        elif a.cmd == "providers":
+            emit(providers_info())
+    except (RuntimeError, ValueError) as e:
+        print(f"agent-run: {e}", file=sys.stderr)
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()

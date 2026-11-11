@@ -1,14 +1,51 @@
-# a2abridge discovery service and binary management, shared by macOS and Ubuntu.
+# a2abridge binary, discovery service and the agent-mesh tooling shared by all agent CLIs
+# (macOS and Ubuntu). Per-agent MCP registration lives in claude/codex/agy/kimi.nix.
 { hostVars, lib, pkgs, ... }:
 
 let
   a2aBin = "${hostVars.home}/.a2abridge/bin/a2abridge";
   version = "4.0.3";
+  # From the release's checksums.txt; update together with `version`.
+  sha256 = {
+    linux_amd64 = "5589c10178c4311c42c65bc4075877fe307067ac5975161fe3beaafb889b38a2";
+    linux_arm64 = "43484e8f3c46a9b6c6adcdacb8cf2c95729c95d0bb3f89674a2cc16de99a10bd";
+    darwin_amd64 = "b096a11dcb62727cbd02dd96dd0f8b15ecbbd72326976dbb97ce04015ae8f624";
+    darwin_arm64 = "6f5b610fecc6eede9742648a6a933f25d7f486a00d884d9fe366219691dd5fa7";
+  };
+  sha256Cases = lib.concatStrings (
+    lib.mapAttrsToList (platform: hash: "      ${platform}) expected=${hash} ;;\n") sha256
+  );
 in
 {
   home.sessionPath = [
     "${hostVars.home}/.a2abridge/bin"
   ];
+
+  home.file = {
+    ".local/bin/a2a-bridge" = {
+      source = ../../scripts/a2a-bridge;
+      executable = true;
+    };
+    ".local/bin/agent-run" = {
+      source = ../../scripts/agent-run;
+      executable = true;
+    };
+    ".local/bin/agent-session" = {
+      source = ../../scripts/agent-session;
+      executable = true;
+    };
+    ".local/bin/agent-quota" = {
+      source = ../../scripts/agent-quota;
+      executable = true;
+    };
+
+    # Skill + global instructions for agents reading ~/.agents (agy, kimi, codex).
+    ".agents/AGENTS.md".source = ../../dotfiles/agents/AGENTS.md;
+    ".agents/skills/a2a-bridge" = {
+      source = ../../dotfiles/agents/skills/a2a-bridge;
+      recursive = true;
+    };
+  };
 
   # Download/install a2abridge binary if missing or different version
   home.activation.a2abridgeBinary = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
@@ -27,17 +64,23 @@ in
       case "$arch" in
         x86_64|amd64)  arch=amd64 ;;
         aarch64|arm64) arch=arm64 ;;
-        *) echo "a2abridge: unsupported arch $arch" >&2; exit 0 ;;
       esac
+      expected=""
+      case "''${os}_''${arch}" in
+${sha256Cases}      esac
       tarball="a2abridge_${version}_''${os}_''${arch}.tar.gz"
       url="https://github.com/vbcherepanov/a2abridge/releases/download/v${version}/$tarball"
       tmpdir="$(mktemp -d)"
-      if ${pkgs.curl}/bin/curl -fsSL "$url" | tar -xz -C "$tmpdir" 2>/dev/null; then
+      if [ -z "$expected" ]; then
+        echo "a2abridge: no pinned checksum for ''${os}_''${arch}, skipping install" >&2
+      elif ! ${pkgs.curl}/bin/curl -fsSL "$url" -o "$tmpdir/$tarball"; then
+        echo "a2abridge: download failed from $url" >&2
+      elif [ "$(${pkgs.coreutils}/bin/sha256sum "$tmpdir/$tarball" | cut -d' ' -f1)" != "$expected" ]; then
+        echo "a2abridge: checksum mismatch for $tarball, not installing" >&2
+      elif tar -xzf "$tmpdir/$tarball" -C "$tmpdir"; then
         $DRY_RUN_CMD mv "$tmpdir/a2abridge" "${a2aBin}"
         $DRY_RUN_CMD chmod +x "${a2aBin}"
         echo "✓ a2abridge v${version} installed to ${a2aBin}"
-      else
-        echo "a2abridge: download failed from $url" >&2
       fi
       rm -rf "$tmpdir"
     fi
@@ -47,7 +90,6 @@ in
   systemd.user.services.a2abridge-directory = lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
     Unit = {
       Description = "Local A2A 1.0 discovery service for AI coding agents";
-      After = [ "network.target" ];
     };
     Service = {
       ExecStart = "${a2aBin} directory --addr 127.0.0.1:7777";
