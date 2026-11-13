@@ -249,12 +249,31 @@ def closest_task(wrong, candidates):
 
 
 def is_not_found(resp):
-    if "error" in resp:
+    if resp.get("error") is not None:
         return "not found" in json.dumps(resp["error"]).lower()
-    res = resp.get("result") or {}
-    if not res.get("isError"):
+    res = resp.get("result")
+    if not isinstance(res, dict) or not res.get("isError"):
         return False
-    return any("not found" in (c.get("text") or "").lower() for c in res.get("content", []))
+    content = res.get("content")
+    if not isinstance(content, list):
+        return False
+    return any(isinstance(c, dict) and "not found" in str(c.get("text") or "").lower() for c in content)
+
+
+def task_arguments(req):
+    """The arguments dict of a task-tool call, or None if req is not one (or malformed)."""
+    if not (isinstance(req, dict) and req.get("method") == "tools/call" and "id" in req):
+        return None
+    params = req.get("params")
+    if not isinstance(params, dict) or params.get("name") not in TASK_TOOLS:
+        return None
+    if params.get("arguments") is None:
+        params["arguments"] = {}
+    args = params["arguments"]
+    return args if isinstance(args, dict) else None
+
+
+PRIVATE = ("_fixed_from",)
 
 
 def run_proxy(args, env, state_dir):
@@ -263,41 +282,73 @@ def run_proxy(args, env, state_dir):
     lock = threading.Lock()
     pending = {}  # json-rpc id -> original tools/call request (task tools only)
 
+    def shutdown(rc):
+        try:
+            child.kill()
+        except Exception:
+            pass
+        os._exit(rc)
+
     def to_child(obj_or_line):
-        data = obj_or_line if isinstance(obj_or_line, bytes) else (json.dumps(obj_or_line) + "\n").encode()
+        if isinstance(obj_or_line, bytes):
+            data = obj_or_line
+        else:
+            data = (json.dumps({k: v for k, v in obj_or_line.items() if k not in PRIVATE}) + "\n").encode()
         with lock:
             try:
                 child.stdin.write(data)
                 child.stdin.flush()
-            except (BrokenPipeError, ValueError):
+            except (BrokenPipeError, ValueError, OSError):
                 pass
 
     def to_parent(data):
-        sys.stdout.buffer.write(data)
-        sys.stdout.buffer.flush()
+        try:
+            sys.stdout.buffer.write(data)
+            sys.stdout.buffer.flush()
+        except (BrokenPipeError, ValueError, OSError):
+            shutdown(0)  # the agent closed our stdout: nobody is listening any more
+
+    def handle(line):
+        """Returns the bytes to pass to the agent, or None if the call was retried."""
+        try:
+            resp = json.loads(line)
+        except ValueError:
+            return line
+        # Only responses (no "method") belong to our pending requests.
+        if not isinstance(resp, dict) or "method" in resp:
+            return line
+        req = pending.pop(json.dumps(resp.get("id")), None)
+        if req is None:
+            return line
+        arguments = req["params"]["arguments"]
+        if "_fixed_from" not in req and is_not_found(resp):
+            wrong = arguments.get("task_id")
+            wrong = wrong if isinstance(wrong, str) else ""
+            fixed = closest_task(wrong, [t for t in open_task_ids(state_dir) if t != wrong])
+            if fixed:
+                req["_fixed_from"] = wrong
+                arguments["task_id"] = fixed
+                pending[json.dumps(req["id"])] = req
+                to_child(req)
+                return None
+        if "_fixed_from" in req and isinstance(resp.get("result"), dict):
+            note = f"(a2a-bridge: task_id corrected from {req['_fixed_from'] or '<empty>'} to {arguments['task_id']})"
+            content = resp["result"].get("content")
+            resp["result"]["content"] = [{"type": "text", "text": note}] + (content if isinstance(content, list) else [])
+            return (json.dumps(resp) + "\n").encode()
+        return line
 
     def pump_child():
         for line in child.stdout:
             try:
-                resp = json.loads(line)
-            except ValueError:
-                to_parent(line)
-                continue
-            req = pending.pop(json.dumps(resp.get("id")), None) if isinstance(resp, dict) else None
-            if req is not None and not req.get("_retried") and is_not_found(resp):
-                wrong = req["params"].get("arguments", {}).get("task_id", "")
-                fixed = closest_task(wrong, [t for t in open_task_ids(state_dir) if t != wrong])
-                if fixed:
-                    req["_retried"] = wrong
-                    req["params"]["arguments"]["task_id"] = fixed
-                    pending[json.dumps(req["id"])] = req
-                    to_child({k: v for k, v in req.items() if k != "_retried"})
-                    continue
-            if req is not None and req.get("_retried") and isinstance(resp.get("result"), dict):
-                note = f"(a2a-bridge: task_id corrected from {req['_retried']} to {req['params']['arguments']['task_id']})"
-                resp["result"].setdefault("content", []).insert(0, {"type": "text", "text": note})
-                line = (json.dumps(resp) + "\n").encode()
-            to_parent(line)
+                out = handle(line)
+            except Exception as e:  # never lose a response over a repair bug
+                print(f"a2a-bridge proxy: {e!r}", file=sys.stderr, flush=True)
+                out = line
+            if out is not None:
+                to_parent(out)
+        # The bridge exited (also after a forwarded signal): follow it.
+        shutdown(child.wait())
 
     reader = threading.Thread(target=pump_child, daemon=True)
     reader.start()
@@ -316,17 +367,17 @@ def run_proxy(args, env, state_dir):
         except ValueError:
             to_child(line)
             continue
-        if (isinstance(req, dict) and req.get("method") == "tools/call" and "id" in req
-                and (req.get("params") or {}).get("name") in TASK_TOOLS):
-            arguments = req["params"].setdefault("arguments", {})
-            if not arguments.get("task_id"):
-                only = closest_task("", open_task_ids(state_dir))
-                if only:
-                    arguments["task_id"] = only
-            pending[json.dumps(req["id"])] = req
-            to_child(req)
+        arguments = task_arguments(req)
+        if arguments is None:
+            to_child(line)
             continue
-        to_child(line)
+        if not arguments.get("task_id"):
+            only = closest_task("", open_task_ids(state_dir))
+            if only:
+                req["_fixed_from"] = arguments.get("task_id") or ""
+                arguments["task_id"] = only
+        pending[json.dumps(req["id"])] = req
+        to_child(req)
 
     with lock:
         try:
