@@ -400,7 +400,7 @@ def run_mcp_server():
                 "jsonrpc": "2.0",
                 "id": req_id,
                 "result": {
-                    "protocolVersion": "2024-11-05",
+                    "protocolVersion": req.get("params", {}).get("protocolVersion", "2024-11-05"),
                     "capabilities": { "tools": {} },
                     "serverInfo": {
                         "name": "agent-quota",
@@ -478,6 +478,17 @@ def run_mcp_server():
                         "message": f"Method not found: {name}"
                     }
                 }
+            sys.stdout.write(json.dumps(res) + "\n")
+            sys.stdout.flush()
+
+        # 6. Everything else: answer every request, or the client waits forever
+        elif req_id is not None:
+            if method in ("resources/list", "prompts/list", "resources/templates/list"):
+                key = {"resources/templates/list": "resourceTemplates"}.get(method, method.split("/")[0])
+                res = {"jsonrpc": "2.0", "id": req_id, "result": {key: []}}
+            else:
+                res = {"jsonrpc": "2.0", "id": req_id,
+                       "error": {"code": -32601, "message": f"Method not found: {method}"}}
             sys.stdout.write(json.dumps(res) + "\n")
             sys.stdout.flush()
 

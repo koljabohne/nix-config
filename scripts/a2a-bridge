@@ -14,16 +14,25 @@ Registered as the `a2a` MCP server of claude, codex, agy and kimi
   they would register as peers that never answer.
 - TMUX/TMUX_PANE are recovered from the agent's tty when the agent strips
   them from the MCP environment (codex does), so tty nudges keep working.
+- Task-ID repair: the bridge runs behind a thin stdio proxy. When
+  a2a_complete_task/a2a_cancel_task fails with "task not found" (models,
+  Gemini in particular, mis-copy the near-identical UUIDv7 ids), the call is
+  retried once with the closest open task of this bridge (edit distance
+  <= MAX_ID_DISTANCE, unique). An empty task_id with exactly one open task
+  is filled in.
 
 Overrides: A2A_FORCE_BRIDGE=1 (bridge even when headless), A2A_NAME,
-A2A_MODEL, A2A_SKILLS.
+A2A_MODEL, A2A_SKILLS, A2A_PROXY=0 (exec the bridge directly).
 """
 
 import json
 import os
 import secrets
+import signal
 import subprocess
 import sys
+import threading
+import urllib.request
 
 HOME = os.environ.get("HOME") or os.path.expanduser("~")
 BINARY = os.path.join(HOME, ".a2abridge", "bin", "a2abridge")
@@ -37,6 +46,9 @@ PROVIDERS = {
 }
 AGENT_PROGS = {"claude", "codex", "agy", "kimi", "antigravity"}
 HEADLESS_FLAGS = {"-p", "--print", "--prompt"}
+TASK_TOOLS = {"a2a_complete_task", "a2a_cancel_task"}
+OPEN_STATES = {"TASK_STATE_SUBMITTED", "TASK_STATE_WORKING", "TASK_STATE_INPUT_REQUIRED"}
+MAX_ID_DISTANCE = 6
 
 
 def proc_cmdline(pid):
@@ -182,6 +194,150 @@ def cleanup_dead_state_dirs():
         pass
 
 
+# ---------------------------------------------------------------- task-id repair proxy
+
+def edit_distance(a, b):
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def own_url(state_dir):
+    try:
+        with open(os.path.join(state_dir, "bridge.log")) as f:
+            lines = f.readlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        if '"a2a server listening"' in line:
+            try:
+                return json.loads(line)["url"]
+            except Exception:
+                return None
+    return None
+
+
+def open_task_ids(state_dir):
+    url = own_url(state_dir)
+    if not url:
+        return []
+    try:
+        req = urllib.request.Request(
+            url.rstrip("/") + "/", method="POST",
+            data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ListTasks", "params": {}}).encode(),
+            headers={"Content-Type": "application/json", "A2A-Version": "1.0"},
+        )
+        tasks = json.load(urllib.request.urlopen(req, timeout=2)).get("result", {}).get("tasks", [])
+    except Exception:
+        return []
+    return [t["id"] for t in tasks if t.get("id") and t.get("status", {}).get("state") in OPEN_STATES]
+
+
+def closest_task(wrong, candidates):
+    if not wrong:
+        return candidates[0] if len(candidates) == 1 else None
+    scored = sorted((edit_distance(wrong, c), c) for c in candidates)
+    if not scored or scored[0][0] > MAX_ID_DISTANCE:
+        return None
+    if len(scored) > 1 and scored[1][0] == scored[0][0]:
+        return None  # ambiguous
+    return scored[0][1]
+
+
+def is_not_found(resp):
+    if "error" in resp:
+        return "not found" in json.dumps(resp["error"]).lower()
+    res = resp.get("result") or {}
+    if not res.get("isError"):
+        return False
+    return any("not found" in (c.get("text") or "").lower() for c in res.get("content", []))
+
+
+def run_proxy(args, env, state_dir):
+    """Run the bridge as a child and repair mis-copied task ids on the way."""
+    child = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
+    lock = threading.Lock()
+    pending = {}  # json-rpc id -> original tools/call request (task tools only)
+
+    def to_child(obj_or_line):
+        data = obj_or_line if isinstance(obj_or_line, bytes) else (json.dumps(obj_or_line) + "\n").encode()
+        with lock:
+            try:
+                child.stdin.write(data)
+                child.stdin.flush()
+            except (BrokenPipeError, ValueError):
+                pass
+
+    def to_parent(data):
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+
+    def pump_child():
+        for line in child.stdout:
+            try:
+                resp = json.loads(line)
+            except ValueError:
+                to_parent(line)
+                continue
+            req = pending.pop(json.dumps(resp.get("id")), None) if isinstance(resp, dict) else None
+            if req is not None and not req.get("_retried") and is_not_found(resp):
+                wrong = req["params"].get("arguments", {}).get("task_id", "")
+                fixed = closest_task(wrong, [t for t in open_task_ids(state_dir) if t != wrong])
+                if fixed:
+                    req["_retried"] = wrong
+                    req["params"]["arguments"]["task_id"] = fixed
+                    pending[json.dumps(req["id"])] = req
+                    to_child({k: v for k, v in req.items() if k != "_retried"})
+                    continue
+            if req is not None and req.get("_retried") and isinstance(resp.get("result"), dict):
+                note = f"(a2a-bridge: task_id corrected from {req['_retried']} to {req['params']['arguments']['task_id']})"
+                resp["result"].setdefault("content", []).insert(0, {"type": "text", "text": note})
+                line = (json.dumps(resp) + "\n").encode()
+            to_parent(line)
+
+    reader = threading.Thread(target=pump_child, daemon=True)
+    reader.start()
+
+    def forward_signal(sig, _frame):
+        try:
+            child.send_signal(sig)
+        except ProcessLookupError:
+            pass
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, forward_signal)
+
+    for line in sys.stdin.buffer:
+        try:
+            req = json.loads(line)
+        except ValueError:
+            to_child(line)
+            continue
+        if (isinstance(req, dict) and req.get("method") == "tools/call" and "id" in req
+                and (req.get("params") or {}).get("name") in TASK_TOOLS):
+            arguments = req["params"].setdefault("arguments", {})
+            if not arguments.get("task_id"):
+                only = closest_task("", open_task_ids(state_dir))
+                if only:
+                    arguments["task_id"] = only
+            pending[json.dumps(req["id"])] = req
+            to_child(req)
+            continue
+        to_child(line)
+
+    with lock:
+        try:
+            child.stdin.close()
+        except Exception:
+            pass
+    rc = child.wait()
+    reader.join(timeout=2)
+    sys.exit(rc)
+
+
 def main():
     argv = sys.argv[1:]
     provider = "agent"
@@ -225,7 +381,9 @@ def main():
 
     args = [BINARY, "bridge", "-name", name, "-model", model,
             "-skills", env.get("A2A_SKILLS") or info["skills"], "-state-dir", state_dir] + argv
-    os.execve(BINARY, args, env)
+    if env.get("A2A_PROXY") == "0":
+        os.execve(BINARY, args, env)
+    run_proxy(args, env, state_dir)
 
 
 if __name__ == "__main__":
