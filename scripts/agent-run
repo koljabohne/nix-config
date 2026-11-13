@@ -21,10 +21,13 @@ edit files in --dir (same permissions as `agent-session`).
 """
 
 import argparse
+import contextlib
+import fcntl
 import importlib.machinery
 import importlib.util
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -67,8 +70,33 @@ def provider_name(p):
     return p
 
 
+JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
 def job_dir(job_id):
+    if not isinstance(job_id, str) or not JOB_ID_RE.match(job_id):
+        raise RuntimeError(f"invalid job id {job_id!r}")
     return os.path.join(JOBS, job_id)
+
+
+@contextlib.contextmanager
+def locked_meta(job_id):
+    """Read-modify-write meta.json under an exclusive lock; yields the dict (None if missing)."""
+    d = job_dir(job_id)
+    with open(os.path.join(d, ".meta.lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        path = os.path.join(d, "meta.json")
+        meta = read_json(path)
+        yield meta
+        if meta is not None:
+            write_json(path, meta)
+
+
+def killpg_quiet(pid, sig):
+    try:
+        os.killpg(pid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass
 
 
 def read_json(path, default=None):
@@ -199,7 +227,13 @@ def run_job(job_id):
         task = READONLY_PREAMBLE + task
     prompt = task
     if len(task) > ARG_LIMIT:
-        prompt = (f"Your full task is in the file {os.path.join(d, 'prompt.txt')}. Read it completely "
+        # The file holds the effective task (incl. the read-only preamble);
+        # the short prompt repeats the preamble so it cannot be skipped.
+        task_file = os.path.join(d, "task.txt")
+        with open(task_file, "w") as f:
+            f.write(task)
+        prompt = ((READONLY_PREAMBLE if meta.get("readonly") else "")
+                  + f"Your full task is in the file {task_file}. Read it completely "
                   "(in parts if needed) and follow it exactly.")
     cmd = build_command(provider, prompt, cwd, meta.get("model"), meta.get("readonly"), out_file)
     if provider == "agy" and prompt is not task:
@@ -208,32 +242,42 @@ def run_job(job_id):
     env = dict(os.environ, AGENT_RUN_DEPTH=str(meta.get("depth", 1)), AGENT_RUN_JOB=job_id)
     log = open(os.path.join(d, "log.txt"), "w")
     stdout = open(os.path.join(d, "stdout.txt"), "w")
-    proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=stdout, stderr=log,
-                            start_new_session=True)
-    meta.update(state="running", pid=proc.pid, runner_pid=os.getpid(), started_at=time.time())
-    write_json(meta_path, meta)
+    # Start and record the pid under the meta lock, so a concurrent cancel
+    # either prevents the start or sees the pid it has to kill.
+    with locked_meta(job_id) as m:
+        if m is None or m.get("state") == "canceled":
+            stdout.close()
+            log.close()
+            if m is not None:
+                m.update(finished_at=time.time())
+            return
+        proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=stdout, stderr=log,
+                                start_new_session=True)
+        m.update(state="running", pid=proc.pid, runner_pid=os.getpid(), started_at=time.time())
+        meta = dict(m)
 
     timeout = meta.get("timeout_sec")
     try:
         code = proc.wait(timeout=timeout)
         state = "completed" if code == 0 else "failed"
     except subprocess.TimeoutExpired:
-        os.killpg(proc.pid, signal.SIGTERM)
+        killpg_quiet(proc.pid, signal.SIGTERM)
         try:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
+            killpg_quiet(proc.pid, signal.SIGKILL)
         code, state = None, "timeout"
     stdout.close()
     log.close()
 
     if not (os.path.exists(out_file) and os.path.getsize(out_file) > 0):
         shutil.copyfile(os.path.join(d, "stdout.txt"), out_file)
-    meta = read_json(meta_path, meta)
-    if meta.get("state") == "canceled":
-        state = "canceled"
-    meta.update(state=state, exit_code=code, finished_at=time.time())
-    write_json(meta_path, meta)
+    with locked_meta(job_id) as m:
+        if m is None:
+            m = meta
+        if m.get("state") == "canceled":
+            state = "canceled"
+        m.update(state=state, exit_code=code, finished_at=time.time())
 
 
 def job_meta(job_id):
@@ -281,18 +325,17 @@ def wait_job(job_id, timeout=None):
 
 
 def cancel_job(job_id):
-    meta = job_meta(job_id)
-    if meta["state"] not in ("queued", "running"):
-        return meta
-    meta["state"] = "canceled"
-    write_json(os.path.join(job_dir(job_id), "meta.json"), meta)
-    for key in ("pid",):
-        if alive(meta.get(key)):
-            try:
-                os.killpg(meta[key], signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-    return meta
+    job_meta(job_id)  # raises for unknown ids
+    with locked_meta(job_id) as meta:
+        if meta["state"] not in ("queued", "running"):
+            return dict(meta)
+        meta["state"] = "canceled"
+        pid = meta.get("pid")
+        result = dict(meta)
+    # A run_job that has not started yet sees "canceled" and never starts.
+    if alive(pid):
+        killpg_quiet(pid, signal.SIGTERM)
+    return result
 
 
 def list_jobs(limit=20):
@@ -352,7 +395,7 @@ MCP_TOOLS = [
                 "dir": {"type": "string", "description": "Working directory (default: your cwd)"},
                 "model": {"type": "string", "description": "Provider-specific model id (optional)"},
                 "readonly": {"type": "boolean", "default": False},
-                "timeout_min": {"type": "number", "description": "Kill after N minutes (default 60)"},
+                "timeout_min": {"type": "number", "description": "Kill after N minutes (default 60, 0 = no timeout)"},
             },
             "required": ["provider", "task"],
         },
@@ -386,7 +429,9 @@ MCP_TOOLS = [
 
 def mcp_call(name, args):
     if name == "delegate_start":
-        timeout = int(float(args.get("timeout_min") or 60) * 60)
+        tmin = args.get("timeout_min")
+        tmin = 60 if tmin is None else float(tmin)
+        timeout = int(tmin * 60) if tmin > 0 else None  # 0 = no timeout
         return create_job(args["provider"], args["task"], args.get("dir"), args.get("model"),
                           args.get("readonly", False), timeout)
     if name == "delegate_wait":

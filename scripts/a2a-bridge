@@ -7,7 +7,8 @@ Registered as the `a2a` MCP server of claude, codex, agy and kimi
 - Identity: a readable name (`codex@nix-pts7`), the model family and skills
   in the Agent Card, so peers can tell providers apart.
 - One state dir (and so one inbox) per agent process:
-  ~/.a2abridge/state/<agent-pid>. The bare bridge shares ./.a2a between all
+  ~/.a2abridge/state/<agent-pid>, held under flock. A second bridge under the
+  same agent (e.g. a script the agent runs) gets <agent-pid>-<own-pid>. The bare bridge shares ./.a2a between all
   agents in one project, so agents ate each other's messages.
 - Headless runs (`claude -p`, `codex exec`, `agy --print`, `kimi -p`,
   anything under `agent-run`) get an empty MCP server instead of a bridge:
@@ -25,6 +26,7 @@ Overrides: A2A_FORCE_BRIDGE=1 (bridge even when headless), A2A_NAME,
 A2A_MODEL, A2A_SKILLS, A2A_PROXY=0 (exec the bridge directly).
 """
 
+import fcntl
 import json
 import os
 import secrets
@@ -78,16 +80,41 @@ def ancestors(limit=8):
         pid = proc_ppid(pid)
 
 
+CODEX_VALUE_FLAGS = {"-c", "--config", "--enable", "--disable", "--remote", "--remote-auth-token-env",
+                     "-i", "--image", "-m", "--model", "--local-provider", "-p", "--profile",
+                     "-s", "--sandbox", "-C", "--cd", "--add-dir", "-a", "--ask-for-approval"}
+INTERPRETERS = ("node", "bun", "deno", "python3", "python")
+
+
 def prog_of(argv):
     if not argv:
         return ""
-    prog = os.path.basename(argv[0])
-    if prog in ("node", "bun", "deno", "python3", "python") and len(argv) > 1:
-        prog = os.path.basename(argv[1])
     # The claude native binary is named after its version (…/versions/2.1.322).
     if "/claude/versions/" in argv[0]:
         return "claude"
+    prog = os.path.basename(argv[0])
+    if prog.startswith(INTERPRETERS):
+        # First non-flag argument is the script (`node --flag script.js`).
+        script = next((a for a in argv[1:] if not a.startswith("-")), "")
+        if script:
+            prog = os.path.basename(script)
     return prog
+
+
+def is_agent_prog(prog):
+    return prog.split("-")[0] in AGENT_PROGS
+
+
+def headless_args(prog, args):
+    if prog.startswith("codex"):
+        # `codex -p` selects a profile; headless is the `exec` (alias `e`) subcommand.
+        for i, a in enumerate(args):
+            if a in ("exec", "e") and (i == 0 or args[i - 1] not in CODEX_VALUE_FLAGS):
+                return True
+            if not a.startswith("-") and (i == 0 or args[i - 1] not in CODEX_VALUE_FLAGS):
+                return False  # another subcommand or the interactive prompt
+        return False
+    return any(a in HEADLESS_FLAGS or a.startswith(("--print=", "--prompt=")) for a in args)
 
 
 def is_headless():
@@ -95,13 +122,8 @@ def is_headless():
         prog = prog_of(argv)
         if prog == "agent-run":
             return True
-        if prog.split("-")[0] in AGENT_PROGS:
-            args = argv[1:]
-            if any(a in HEADLESS_FLAGS for a in args):
-                return True
-            if prog.startswith("codex") and "exec" in args[:3]:
-                return True
-            return False
+        if is_agent_prog(prog):
+            return headless_args(prog, argv[1:])
     return False
 
 
@@ -109,7 +131,7 @@ def agent_pid():
     """PID of the agent CLI that spawned us (state dir key, also used by the hook)."""
     first = os.getppid()
     for pid, argv in ancestors():
-        if prog_of(argv).split("-")[0] in AGENT_PROGS:
+        if is_agent_prog(prog_of(argv)):
             return pid
     return first
 
@@ -179,20 +201,69 @@ def serve_empty_mcp():
         print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": result}), flush=True)
 
 
-def cleanup_dead_state_dirs():
+def pid_alive(pid):
     try:
-        for name in os.listdir(STATE_ROOT):
-            if not name.isdigit():
-                continue
-            try:
-                os.kill(int(name), 0)
-            except ProcessLookupError:
-                subprocess.run(["rm", "-rf", os.path.join(STATE_ROOT, name)])
-            except PermissionError:
-                pass
-    except FileNotFoundError:
-        pass
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
 
+
+def lock_free(path):
+    """True if nobody holds the state dir lock (or the dir has none)."""
+    lock = os.path.join(path, ".lock")
+    if not os.path.exists(lock):
+        return True
+    try:
+        fd = os.open(lock, os.O_RDWR)
+    except OSError:
+        return True
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+
+
+def cleanup_dead_state_dirs():
+    """Remove state dirs of dead agents (<pid>) and of finished extra bridges (<pid>-<pid>)."""
+    try:
+        names = os.listdir(STATE_ROOT)
+    except FileNotFoundError:
+        return
+    for name in names:
+        path = os.path.join(STATE_ROOT, name)
+        pids = name.split("-")
+        if not all(p.isdigit() for p in pids) or len(pids) > 2:
+            continue
+        dead = not pid_alive(int(pids[0])) or (len(pids) == 2 and not pid_alive(int(pids[1])))
+        if dead and lock_free(path):
+            subprocess.run(["rm", "-rf", path])
+
+
+def claim_state_dir(apid):
+    """Lock ~/.a2abridge/state/<agent-pid> for this bridge's lifetime.
+
+    The first bridge of an agent (its MCP server) owns <agent-pid>, which the
+    inbox hook reads. Any further bridge under the same agent (a test script,
+    a helper the agent ran) gets <agent-pid>-<own-pid> instead of sharing and
+    clobbering meta.json and the inbox. Returns (path, lock fd)."""
+    for name in (str(apid), f"{apid}-{os.getpid()}"):
+        path = os.path.join(STATE_ROOT, name)
+        os.makedirs(path, exist_ok=True)
+        fd = os.open(os.path.join(path, ".lock"), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            continue
+        os.set_inheritable(fd, True)  # survives os.execve (A2A_PROXY=0)
+        return path, fd
+    raise SystemExit("a2a-bridge: could not claim a state dir")
 
 # ---------------------------------------------------------------- task-id repair proxy
 
@@ -415,8 +486,7 @@ def main():
 
     apid = agent_pid()
     cleanup_dead_state_dirs()
-    state_dir = os.path.join(STATE_ROOT, str(apid))
-    os.makedirs(state_dir, exist_ok=True)
+    state_dir, _lock_fd = claim_state_dir(apid)
 
     project = os.path.basename(os.getcwd().rstrip("/")) or "root"
     suffix = tty.replace("/", "") if tty else secrets.token_hex(2)

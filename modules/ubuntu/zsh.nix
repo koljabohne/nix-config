@@ -91,6 +91,13 @@
       if command -v fnm >/dev/null 2>&1; then
         eval "$(fnm env --use-on-cd --shell zsh)"
       fi
+
+      # Interactive agent CLIs run in their own tmux session, so A2A peers can
+      # nudge them while idle (see scripts/agent-tmux; AGENT_NO_TMUX=1 to skip).
+      for _agent in claude codex agy kimi; do
+        eval "$_agent() { agent-tmux $_agent \"\$@\"; }"
+      done
+      unset _agent
     '';
   };
 }

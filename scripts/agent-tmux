@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# agent-tmux — start an interactive agent CLI inside its own tmux session.
+#
+# A2A peers wake an idle agent by typing a nudge into its terminal. That only
+# works inside tmux: outside, the bridge would need TIOCSTI, which Linux >= 6.2
+# disables (dev.tty.legacy_tiocsti = 0). So questions to an idle agent waited
+# until the user typed something.
+#
+# Usage: agent-tmux <claude|codex|agy|kimi> [args...]   (zsh wraps the CLIs)
+# Runs the CLI directly (no tmux) when already inside tmux, when stdin/stdout
+# is not a terminal, for headless/one-shot calls (-p, exec, subcommands,
+# --help/--version) or with AGENT_NO_TMUX=1.
+# The session is destroyed when its terminal detaches/closes, like a plain run.
+
+set -u
+prog="${1:?usage: agent-tmux <prog> [args...]}"
+shift
+
+direct() { exec "$prog" "$@"; }
+
+[ -n "${TMUX:-}" ] && direct "$@"
+[ -n "${AGENT_NO_TMUX:-}" ] && direct "$@"
+[ -t 0 ] && [ -t 1 ] || direct "$@"
+command -v tmux >/dev/null 2>&1 || direct "$@"
+
+# Only wrap interactive starts: no args, or flags only (e.g. --resume, -c,
+# --model x). A first positional word is a subcommand (`codex exec`,
+# `agy models`, `claude mcp`) or an initial prompt — run those directly.
+prev=""
+for arg in "$@"; do
+  case "$arg" in
+    -p|--print|--prompt|--prompt=*|--print=*|-h|--help|-v|-V|--version) direct "$@" ;;
+  esac
+  case "$prev" in
+    -*) ;;  # value of the previous flag (e.g. --model x)
+    *) case "$arg" in -*) ;; *) direct "$@" ;; esac ;;
+  esac
+  # codex -p is --profile (takes a value) — handled above as headless, which
+  # only costs the tmux wrapping, never correctness.
+  case "$arg" in --*=*) prev="" ;; -*) prev="$arg" ;; *) prev="" ;; esac
+done
+
+base="$(basename "$PWD" | tr -c 'A-Za-z0-9_-' '-' | sed 's/-*$//')"
+name="${prog}-${base:-root}"
+n=1
+while tmux has-session -t "=$name" 2>/dev/null; do
+  n=$((n + 1))
+  name="${prog}-${base:-root}-$n"
+done
+
+# Hand the caller's whole environment to the session: a running tmux server
+# would otherwise start it with its own (possibly stale) global environment.
+envargs=()
+while IFS= read -r -d '' kv; do
+  case "${kv%%=*}" in
+    TMUX|TMUX_PANE|TERM|COLUMNS|LINES|SHLVL|_|PWD|OLDPWD) ;;
+    *) envargs+=(-e "$kv") ;;
+  esac
+done < <(env -0)
+
+tmux new-session -d -s "$name" -c "$PWD" "${envargs[@]}" -- "$prog" "$@" || direct "$@"
+# destroy-unattached must be set once a client is attached (on a detached
+# session it fires at once), so chain it to the attach.
+exec tmux attach-session -t "=$name" \; set-option -t "=$name:" destroy-unattached on

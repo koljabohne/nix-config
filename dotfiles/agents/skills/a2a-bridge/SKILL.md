@@ -40,12 +40,14 @@ delegate_list() / delegate_cancel(job_id)
 - `a2a_list_agents()` — peers with their Agent Card. Names are `<provider>@<project>-<tty>` (e.g. `codex@nix-pts7`); `skills` contain `provider:<name>`; `description` contains the working directory.
 - `a2a_send_message(peer_url, text)` creates a task on the peer that stays working until the peer answers with `a2a_complete_task`. Read the answer later with `a2a_get_task(peer_url, task_id)`. Continue a thread with a new message that reuses `context_id`; pass `task_id` only for a task in input-required state.
 - Never block your user waiting for a reply. Say "waiting on `<peer>` for X" in your end-of-turn note and continue.
+- **Waiting on a peer while idle**: start `a2a-wait --task <peer_url> <task_id>` as a *background* shell command (Claude Code: Bash with `run_in_background`). It returns when the task finishes (exit 0, prints the reply), when a new message reaches your inbox — e.g. the peer asks back (exit 10), or on `--timeout` (default 30m, exit 2). It only peeks at the inbox; read and answer with `a2a_inbox` / `a2a_complete_task`.
+- **Asking back**: there is no tool to put a task into input-required. To ask the sender something, send them a new `a2a_send_message` (same `context_id`) and keep your task working; complete it once you have the answer. The sender gets your question in its inbox.
 - Do not use `a2a_send_streaming` between agents — its keep-alive does not match an LLM turn.
 - Prefix outbound text with your own name from `a2a_whoami()` in brackets.
 
 ### Inbound — every turn
 
-Claude gets its inbox injected by a hook before each prompt. Other agents get a tty nudge when they run in tmux; **call `a2a_inbox()` at the start of each turn** if no hook delivered messages. For each message:
+Claude gets its inbox injected by a hook before each prompt; messages marked *reply/FYI* answer a request you sent and need no `a2a_complete_task`. Idle agents are woken by a tty nudge only inside tmux (interactive CLIs start in tmux via `agent-tmux`); **call `a2a_inbox()` at the start of each turn** if no hook delivered messages. For each open request:
 
 - **FYI** → mention it to the user, `a2a_complete_task(task_id, "acknowledged")`.
 - **Quick question** (≤2 file reads) → answer right away with `a2a_complete_task`.

@@ -17,6 +17,7 @@ Usage: agent-session start|run <agent> [dir] [--name N] [--ttl 15m|cache|never] 
 """
 
 import argparse
+import fcntl
 import glob
 import hashlib
 import importlib.machinery
@@ -76,7 +77,7 @@ def sessions():
 
 
 def pane(session, fmt_):
-    out = tmux("list-panes", "-t", session, "-F", fmt_).stdout.strip()
+    out = tmux("list-panes", "-t", f"={session}:", "-F", fmt_).stdout.strip()
     return out.splitlines()[0] if out else ""
 
 
@@ -226,7 +227,7 @@ def transcript_activity(agent, cwd, since):
 
 
 def pane_activity(session, meta):
-    out = tmux("capture-pane", "-p", "-t", session).stdout.rstrip("\n").splitlines()
+    out = tmux("capture-pane", "-p", "-t", f"={session}:").stdout.rstrip("\n").splitlines()
     body = "\n".join(out[:-STATUS_LINES] if len(out) > STATUS_LINES else out)
     digest = hashlib.sha1(body.encode()).hexdigest()
     if digest != meta.get("pane_hash"):
@@ -280,7 +281,7 @@ def last_activity(session, meta):
 
 def kill(session, reason):
     print(f"[watchdog] stopping '{session}': {reason}", flush=True)
-    tmux("kill-session", "-t", session)
+    tmux("kill-session", "-t", f"={session}")
     drop_meta(session)
 
 
@@ -297,7 +298,7 @@ def watchdog_tick():
             continue
         if agent not in quota_cache:
             quota_cache[agent] = quota_exhausted(agent)
-        if quota_cache[agent]:
+        if quota_cache[agent] and not meta.get("force"):
             kill(s, quota_cache[agent])
             continue
         ttl = meta.get("ttl_sec")
@@ -319,22 +320,31 @@ def watchdog_tick():
     return len(sessions())
 
 
+WATCHDOG_LOCK = os.path.join(RUN_DIR, "watchdog.lock")
+
+
 def ensure_watchdog():
-    pid_file = os.path.join(RUN_DIR, "watchdog.pid")
-    try:
-        with open(pid_file) as f:
-            os.kill(int(f.read().strip()), 0)
-        return
-    except Exception:
-        pass
-    p = subprocess.Popen([sys.executable, os.path.abspath(__file__), "_watchdog"],
-                         stdin=subprocess.DEVNULL, stdout=open(os.path.join(RUN_DIR, "watchdog.log"), "a"),
-                         stderr=subprocess.STDOUT, start_new_session=True)
-    with open(pid_file, "w") as f:
-        f.write(str(p.pid))
+    """Spawn a watchdog; it exits on its own if another one keeps running (see watchdog_loop)."""
+    subprocess.Popen([sys.executable, os.path.abspath(__file__), "_watchdog"],
+                     stdin=subprocess.DEVNULL, stdout=open(os.path.join(RUN_DIR, "watchdog.log"), "a"),
+                     stderr=subprocess.STDOUT, start_new_session=True)
 
 
 def watchdog_loop():
+    # The lock (held for the process lifetime) makes the watchdog a singleton:
+    # parallel `start`s may spawn several, all but one exit here.
+    lock = open(WATCHDOG_LOCK, "a")
+    # Wait one interval: if the running watchdog is just exiting (it saw zero
+    # sessions before ours started), we take over instead of leaving none.
+    deadline = time.time() + WATCH_INTERVAL + 5
+    while True:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            if time.time() >= deadline:
+                return
+            time.sleep(1)
     pid_file = os.path.join(RUN_DIR, "watchdog.pid")
     with open(pid_file, "w") as f:
         f.write(str(os.getpid()))
@@ -389,10 +399,11 @@ def cmd_start(a):
         sys.exit(f"✗ {agent} exited right after start.")
     if send_task:
         time.sleep(3)
-        tmux("send-keys", "-t", session, "-l", send_task)
-        tmux("send-keys", "-t", session, "Enter")
+        tmux("send-keys", "-t", f"={session}:", "-l", send_task)
+        tmux("send-keys", "-t", f"={session}:", "Enter")
 
-    save_meta(session, {"agent": agent, "session": session, "cwd": target, "started_at": time.time(), "ttl_sec": ttl})
+    save_meta(session, {"agent": agent, "session": session, "cwd": target, "started_at": time.time(), "ttl_sec": ttl,
+                        "force": bool(a.force)})
     ensure_watchdog()
     eff = ttl if ttl is not None else (claude_cache_ttl() if agent == "claude" else DEFAULT_TTL[agent])
     print(f"✓ {agent} running in tmux session '{session}' at {target}")
@@ -402,13 +413,13 @@ def cmd_start(a):
 
 
 def cmd_attach(a):
-    os.execvp("tmux", ["tmux", "attach-session", "-t", resolve(a.target)])
+    os.execvp("tmux", ["tmux", "attach-session", "-t", "=" + resolve(a.target)])
 
 
 def cmd_stop(a):
     targets = sessions() if a.target == "all" else [resolve(a.target)]
     for s in targets:
-        tmux("kill-session", "-t", s)
+        tmux("kill-session", "-t", f"={s}")
         drop_meta(s)
         print(f"✓ stopped {s}")
     if not targets:

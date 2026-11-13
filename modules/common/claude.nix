@@ -70,7 +70,10 @@ in
           --argjson hook '${builtins.toJSON a2aHook}' \
           --argjson allow '${builtins.toJSON allowedTools}' \
           '.statusLine = $sl
-           | .hooks.UserPromptSubmit = $hook
+           | .hooks.UserPromptSubmit = (
+               [ (.hooks.UserPromptSubmit // [])[]
+                 | select([.hooks[]?.command // "" | test("a2a-inbox-hook")] | any | not) ]
+               + $hook)
            | .permissions.allow = (((.permissions.allow // []) + $allow) | unique)' \
           "$settings" > "$tmp"; then
         cat "$tmp" > "$settings"   # keep existing permissions

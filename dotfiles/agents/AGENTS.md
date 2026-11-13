@@ -8,7 +8,10 @@ Three MCP servers connect you; the `a2a-bridge` skill has the details.
   `a2a_complete_task(task_id, text)` before you continue with the user's
   request. Find peers with `a2a_list_agents()` (names look like
   `codex@nix-pts7`, skills carry `provider:<name>`), message them with
-  `a2a_send_message(peer_url, text)`; never block waiting for a reply.
+  `a2a_send_message(peer_url, text)`; never block waiting for a reply. To be
+  woken while idle, run `a2a-wait --task <peer_url> <task_id>` in the
+  background (returns on the reply or on a new inbox message). Need input
+  from the sender? Ask with a new `a2a_send_message`, then complete the task.
 - **delegate** — run a self-contained task headless on another provider:
   `delegate_start(provider, task, readonly?)`, then `delegate_wait(job_id)`.
   The subagent sees nothing of your conversation, so put the goal, files,

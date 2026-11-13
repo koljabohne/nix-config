@@ -38,6 +38,14 @@ in
       source = ../../scripts/agent-quota;
       executable = true;
     };
+    ".local/bin/a2a-wait" = {
+      source = ../../scripts/a2a-wait;
+      executable = true;
+    };
+    ".local/bin/agent-tmux" = {
+      source = ../../scripts/agent-tmux;
+      executable = true;
+    };
 
     # Skill + global instructions for agents reading ~/.agents (agy, kimi, codex).
     ".agents/AGENTS.md".source = ../../dotfiles/agents/AGENTS.md;
@@ -56,7 +64,9 @@ in
       need_install=1
     fi
 
-    if [ "$need_install" -eq 1 ]; then
+    if [ "$need_install" -eq 1 ] && [ -n "''${DRY_RUN_CMD:-}" ]; then
+      echo "would install a2abridge v${version} to ${a2aBin}"
+    elif [ "$need_install" -eq 1 ]; then
       echo "Installing / updating a2abridge v${version}..."
       $DRY_RUN_CMD mkdir -p "${hostVars.home}/.a2abridge/bin"
       os="$(uname -s | tr '[:upper:]' '[:lower:]')"

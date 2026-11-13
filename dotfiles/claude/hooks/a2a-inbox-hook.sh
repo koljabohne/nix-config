@@ -44,15 +44,25 @@ if inbox and os.path.getsize(inbox) > 0:
     # fresh inbox.json and is picked up next turn instead of being lost.
     draining = inbox + ".draining"
     try:
-        os.replace(inbox, draining)
+        if not os.path.exists(draining):
+            os.replace(inbox, draining)
         with open(draining) as f:
             msgs = json.load(f) or []
         os.remove(draining)
     except Exception:
+        # Unreadable (e.g. caught mid-write): keep .draining, retry next turn.
         msgs = []
 
+def msg_key(m):
+    if m.get("messageId"):
+        return "m:" + m["messageId"]
+    import hashlib
+    raw = json.dumps([m.get("taskId"), m.get("from"), m.get("text")], sort_keys=True)
+    return "h:" + hashlib.sha1(raw.encode()).hexdigest()
+
 # The bridge keeps its own in-memory inbox and rewrites inbox.json from it, so
-# drained messages can reappear: deliver each task id only once.
+# drained messages can reappear: deliver each message only once. Keyed by
+# message (not task): a follow-up on an INPUT_REQUIRED task keeps its task id.
 if inbox and msgs:
     seen_path = os.path.join(os.path.dirname(inbox), "delivered.json")
     try:
@@ -60,16 +70,41 @@ if inbox and msgs:
             seen = json.load(f)
     except Exception:
         seen = []
-    fresh = [m for m in msgs if m.get("taskId") not in seen]
-    seen = (seen + [m.get("taskId") for m in fresh if m.get("taskId")])[-500:]
+    fresh = [m for m in msgs if msg_key(m) not in seen]
+    seen = (seen + [msg_key(m) for m in fresh])[-500:]
     try:
-        with open(seen_path, "w") as f:
+        with open(seen_path + ".tmp", "w") as f:
             json.dump(seen, f)
+        os.replace(seen_path + ".tmp", seen_path)
     except Exception:
         pass
     msgs = fresh
 
+def own_open_tasks(state_dir):
+    """Ids of tasks peers opened on this bridge, or None if unknown."""
+    import urllib.request
+    url = None
+    try:
+        with open(os.path.join(state_dir, "bridge.log")) as f:
+            for line in f:
+                if '"a2a server listening"' in line:
+                    url = json.loads(line).get("url")
+    except Exception:
+        return None
+    if not url:
+        return None
+    try:
+        req = urllib.request.Request(url.rstrip("/") + "/", method="POST",
+            data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ListTasks", "params": {}}).encode(),
+            headers={"Content-Type": "application/json", "A2A-Version": "1.0"})
+        tasks = json.load(urllib.request.urlopen(req, timeout=1)).get("result", {}).get("tasks", [])
+    except Exception:
+        return None
+    return {t.get("id") for t in tasks
+            if t.get("status", {}).get("state") in ("TASK_STATE_SUBMITTED", "TASK_STATE_WORKING", "TASK_STATE_INPUT_REQUIRED")}
+
 if msgs:
+    open_ids = own_open_tasks(os.path.dirname(inbox))
     out.append(f"You have {len(msgs)} unread A2A message(s):")
     out.append("")
     for m in msgs:
@@ -77,9 +112,14 @@ if msgs:
         task_id = m.get("taskId", "")
         ctx = m.get("contextId", "")
         text = (m.get("text") or "").replace("\n", " ").strip()
-        out.append(f"- **from `{sender}`** (task `{task_id}`{', context `' + ctx + '`' if ctx else ''}): {text}")
+        # A task id that is not open on our own bridge is a reply to a request
+        # we sent (or already answered): nothing to complete.
+        kind = "" if open_ids is None or task_id in open_ids else " — reply/FYI, no a2a_complete_task needed"
+        out.append(f"- **from `{sender}`** (task `{task_id}`{', context `' + ctx + '`' if ctx else ''}{kind}): {text}")
     out.append("")
-    out.append("Process each message *before* answering the user: reply with `a2a_complete_task(task_id, text)`, then continue with the user's prompt.")
+    out.append("Process each message *before* answering the user: answer open requests with "
+               "`a2a_complete_task(task_id, text)` (ask back with `a2a_send_message` if you need input), "
+               "then continue with the user's prompt.")
     out.append("")
 
 # 2. Quota alerts (< 15% remaining, or cold cache when > 70% used).
@@ -90,6 +130,8 @@ try:
     used = five.get("used_percentage")
     resets_at = five.get("resets_at")
     warm = q.get("prompt_cache", {}).get("warm", False)
+    if resets_at and resets_at < time.time():
+        used = None  # window already reset; the cached percentage is stale
     if used is not None and used >= 85:
         rem = max(0, round(100 - used))
         reset = ""

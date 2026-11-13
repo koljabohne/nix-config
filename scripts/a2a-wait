@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""a2a-wait — block until an A2A peer finishes a task or a message arrives.
+
+For agents waiting on a peer: run it in the background (Claude Code: Bash
+with run_in_background) and get woken up as soon as
+
+- one of the watched tasks reaches a terminal or interrupted state, or
+- a new message lands in *this* agent's inbox (e.g. the peer asks back),
+
+instead of sitting idle until the user types. The inbox is only peeked,
+never drained: delivery stays with the inbox hook / a2a_inbox.
+
+Usage: a2a-wait [--task <peer_url> <task_id>]... [--timeout 30m] [--interval 3]
+Exit codes: 0 task finished, 10 new inbox message, 2 timeout, 1 error.
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import sys
+import time
+import urllib.request
+
+STATE_ROOT = os.path.join(os.path.expanduser("~"), ".a2abridge", "state")
+FINAL = {"TASK_STATE_COMPLETED", "TASK_STATE_FAILED", "TASK_STATE_CANCELED", "TASK_STATE_REJECTED",
+         "TASK_STATE_INPUT_REQUIRED", "TASK_STATE_AUTH_REQUIRED"}
+
+
+def ppid(pid):
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return int(f.read().rsplit(")", 1)[1].split()[1])
+    except OSError:
+        import subprocess
+        out = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+        return int(out) if out.isdigit() else 0
+
+
+def own_state_dir():
+    """State dir of the nearest ancestor agent that runs a bridge (see a2a-bridge)."""
+    pid = os.getppid()
+    for _ in range(12):
+        if pid <= 1:
+            return None
+        d = os.path.join(STATE_ROOT, str(pid))
+        if os.path.isdir(d):
+            return d
+        pid = ppid(pid)
+    return None
+
+
+def msg_key(m):
+    """Same key as the inbox hook uses in delivered.json."""
+    if m.get("messageId"):
+        return "m:" + m["messageId"]
+    raw = json.dumps([m.get("taskId"), m.get("from"), m.get("text")], sort_keys=True)
+    return "h:" + hashlib.sha1(raw.encode()).hexdigest()
+
+
+def read_json(path, default):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def inbox_keys(state_dir):
+    msgs = []
+    for name in ("inbox.json", "inbox.json.draining"):
+        data = read_json(os.path.join(state_dir, name), [])
+        if isinstance(data, list):
+            msgs += [m for m in data if isinstance(m, dict)]
+    return {msg_key(m): m for m in msgs}
+
+
+def task_state(url, task_id):
+    req = urllib.request.Request(
+        url.rstrip("/") + "/", method="POST",
+        data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "GetTask", "params": {"id": task_id}}).encode(),
+        headers={"Content-Type": "application/json", "A2A-Version": "1.0"},
+    )
+    res = json.load(urllib.request.urlopen(req, timeout=5))
+    if "error" in res:
+        raise RuntimeError(res["error"].get("message", "GetTask failed"))
+    return res["result"]
+
+
+def parse_duration(s):
+    s = str(s).strip().lower()
+    mult = {"s": 1, "m": 60, "h": 3600}.get(s[-1])
+    return float(s[:-1]) * mult if mult else float(s)
+
+
+def reply_text(task):
+    texts = []
+    for art in task.get("artifacts") or []:
+        texts += [p.get("text", "") for p in art.get("parts") or [] if p.get("text")]
+    if not texts:
+        msg = (task.get("status") or {}).get("message") or {}
+        texts = [p.get("text", "") for p in msg.get("parts") or [] if p.get("text")]
+    return "\n".join(texts)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--task", nargs=2, action="append", default=[], metavar=("PEER_URL", "TASK_ID"))
+    ap.add_argument("--timeout", default="30m")
+    ap.add_argument("--interval", type=float, default=3.0)
+    a = ap.parse_args()
+
+    state_dir = own_state_dir()
+    if not state_dir and not a.task:
+        sys.exit("a2a-wait: no bridge state dir found for this agent and no --task given")
+    baseline = set(inbox_keys(state_dir)) if state_dir else set()
+    delivered = lambda: set(read_json(os.path.join(state_dir, "delivered.json"), []))
+    deadline = time.time() + parse_duration(a.timeout)
+    errors = {}
+
+    while time.time() < deadline:
+        for url, task_id in a.task:
+            try:
+                task = task_state(url, task_id)
+            except Exception as e:
+                errors[task_id] = errors.get(task_id, 0) + 1
+                if errors[task_id] >= 5:
+                    print(f"task {task_id} at {url}: unreachable ({e})")
+                    return 1
+                continue
+            errors.pop(task_id, None)
+            state = (task.get("status") or {}).get("state", "")
+            if state in FINAL:
+                print(f"task {task_id} at {url}: {state}")
+                text = reply_text(task)
+                if text:
+                    print(text)
+                return 0
+        if state_dir:
+            new = {k: m for k, m in inbox_keys(state_dir).items() if k not in baseline and k not in delivered()}
+            if new:
+                print(f"{len(new)} new A2A message(s) in the inbox (not drained):")
+                for m in new.values():
+                    text = (m.get("text") or "").replace("\n", " ")
+                    print(f"- from {m.get('from') or 'unknown'} (task {m.get('taskId', '')}): {text[:300]}")
+                print("Read and answer them with a2a_inbox / a2a_complete_task.")
+                return 10
+        time.sleep(a.interval)
+    print("a2a-wait: timeout")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

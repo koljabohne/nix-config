@@ -49,7 +49,12 @@ def get_claude_stats():
     five_used = five.get("used_percentage")
     five_resets_at = five.get("resets_at")
     five_rem_sec = max(0, int(five_resets_at - time.time())) if five_resets_at else None
+    if five_resets_at and five_resets_at < time.time():
+        five_used = 0.0  # window reset since the statusline last wrote the cache
     seven_used = seven.get("used_percentage")
+    seven_resets_at = seven.get("resets_at")
+    if seven_resets_at and seven_resets_at < time.time():
+        seven_used = 0.0
 
     expires_at = cache.get("expires_at")
     cache_exp_sec = max(0, int(expires_at - time.time())) if expires_at else None
@@ -383,114 +388,130 @@ def print_cli_output():
 def run_mcp_server():
     """Standard Model Context Protocol (MCP) stdio server over JSON-RPC 2.0."""
     for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
         try:
-            req = json.loads(line)
-        except Exception:
-            continue
+            handle_mcp_line(line)
+        except Exception as e:  # one bad request must not kill the server
+            try:
+                req_id = json.loads(line).get("id")
+            except Exception:
+                req_id = None
+            if req_id is not None:
+                sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": req_id,
+                                             "error": {"code": -32603, "message": f"internal error: {e}"}}) + "\n")
+                sys.stdout.flush()
 
-        req_id = req.get("id")
-        method = req.get("method")
 
-        # 1. Initialize
-        if method == "initialize":
+def handle_mcp_line(line):
+    line = line.strip()
+    if not line:
+        return
+    try:
+        req = json.loads(line)
+    except Exception:
+        return
+
+    req_id = req.get("id")
+    method = req.get("method")
+
+    # 1. Initialize
+    if method == "initialize":
+        res = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "protocolVersion": req.get("params", {}).get("protocolVersion", "2024-11-05"),
+                "capabilities": { "tools": {} },
+                "serverInfo": {
+                    "name": "agent-quota",
+                    "version": "1.0.0"
+                }
+            }
+        }
+        sys.stdout.write(json.dumps(res) + "\n")
+        sys.stdout.flush()
+
+    # 2. Initialized notification
+    elif method == "notifications/initialized":
+        return
+
+    # 3. Ping
+    elif method == "ping":
+        res = { "jsonrpc": "2.0", "id": req_id, "result": {} }
+        sys.stdout.write(json.dumps(res) + "\n")
+        sys.stdout.flush()
+
+    # 4. Tools list
+    elif method == "tools/list":
+        tools = [
+            {
+                "name": "get_quota",
+                "description": "Get real-time rate limits, quota volume, and prompt cache status for Claude Code, Antigravity, Codex, and Kimi Code. Use this before running heavy refactorings or test suites to prevent unexpected rate-limit exhaustion, or to decide whether to delegate work via A2A.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "agent": {
+                            "type": "string",
+                            "description": "Filter by agent ('all', 'claude', 'antigravity', 'codex', or 'kimi')",
+                            "enum": ["all", "claude", "antigravity", "codex", "kimi"]
+                        }
+                    },
+                    "required": []
+                }
+            }
+        ]
+        res = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": { "tools": tools }
+        }
+        sys.stdout.write(json.dumps(res) + "\n")
+        sys.stdout.flush()
+
+    # 5. Tools call
+    elif method == "tools/call":
+        params = req.get("params") or {}
+        name = params.get("name")
+        args = params.get("arguments") or {}
+        if not isinstance(args, dict):
+            args = {}
+
+        if name == "get_quota":
+            agent_filter = args.get("agent", "all")
+            data = collect_all_stats(agent_filter)
             res = {
                 "jsonrpc": "2.0",
                 "id": req_id,
                 "result": {
-                    "protocolVersion": req.get("params", {}).get("protocolVersion", "2024-11-05"),
-                    "capabilities": { "tools": {} },
-                    "serverInfo": {
-                        "name": "agent-quota",
-                        "version": "1.0.0"
-                    }
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(data, indent=2)
+                        }
+                    ]
                 }
             }
-            sys.stdout.write(json.dumps(res) + "\n")
-            sys.stdout.flush()
-
-        # 2. Initialized notification
-        elif method == "notifications/initialized":
-            continue
-
-        # 3. Ping
-        elif method == "ping":
-            res = { "jsonrpc": "2.0", "id": req_id, "result": {} }
-            sys.stdout.write(json.dumps(res) + "\n")
-            sys.stdout.flush()
-
-        # 4. Tools list
-        elif method == "tools/list":
-            tools = [
-                {
-                    "name": "get_quota",
-                    "description": "Get real-time rate limits, quota volume, and prompt cache status for Claude Code, Antigravity, Codex, and Kimi Code. Use this before running heavy refactorings or test suites to prevent unexpected rate-limit exhaustion, or to decide whether to delegate work via A2A.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "agent": {
-                                "type": "string",
-                                "description": "Filter by agent ('all', 'claude', 'antigravity', 'codex', or 'kimi')",
-                                "enum": ["all", "claude", "antigravity", "codex", "kimi"]
-                            }
-                        },
-                        "required": []
-                    }
-                }
-            ]
+        else:
             res = {
                 "jsonrpc": "2.0",
                 "id": req_id,
-                "result": { "tools": tools }
+                "error": {
+                    "code": -32601,
+                    "message": f"Method not found: {name}"
+                }
             }
-            sys.stdout.write(json.dumps(res) + "\n")
-            sys.stdout.flush()
+        sys.stdout.write(json.dumps(res) + "\n")
+        sys.stdout.flush()
 
-        # 5. Tools call
-        elif method == "tools/call":
-            params = req.get("params", {})
-            name = params.get("name")
-            args = params.get("arguments", {})
-
-            if name == "get_quota":
-                agent_filter = args.get("agent", "all")
-                data = collect_all_stats(agent_filter)
-                res = {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "result": {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": json.dumps(data, indent=2)
-                            }
-                        ]
-                    }
-                }
-            else:
-                res = {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "error": {
-                        "code": -32601,
-                        "message": f"Method not found: {name}"
-                    }
-                }
-            sys.stdout.write(json.dumps(res) + "\n")
-            sys.stdout.flush()
-
-        # 6. Everything else: answer every request, or the client waits forever
-        elif req_id is not None:
-            if method in ("resources/list", "prompts/list", "resources/templates/list"):
-                key = {"resources/templates/list": "resourceTemplates"}.get(method, method.split("/")[0])
-                res = {"jsonrpc": "2.0", "id": req_id, "result": {key: []}}
-            else:
-                res = {"jsonrpc": "2.0", "id": req_id,
-                       "error": {"code": -32601, "message": f"Method not found: {method}"}}
-            sys.stdout.write(json.dumps(res) + "\n")
-            sys.stdout.flush()
+    # 6. Everything else: answer every request, or the client waits forever
+    elif req_id is not None:
+        if method in ("resources/list", "prompts/list", "resources/templates/list"):
+            key = {"resources/templates/list": "resourceTemplates"}.get(method, method.split("/")[0])
+            res = {"jsonrpc": "2.0", "id": req_id, "result": {key: []}}
+        else:
+            res = {"jsonrpc": "2.0", "id": req_id,
+                   "error": {"code": -32601, "message": f"Method not found: {method}"}}
+        sys.stdout.write(json.dumps(res) + "\n")
+        sys.stdout.flush()
 
 def main():
     if "--mcp" in sys.argv:
